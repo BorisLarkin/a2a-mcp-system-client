@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  telegram-bot:
+    build: .
+    container_name: mcp-telegram-bot
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - LOCAL_API_URL=http://local-proxy:8080
+      - CLOUD_API_KEY=${CLOUD_API_KEY}
+      - DISPATCHER_ID=${DISPATCHER_ID}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DEBUG=${DEBUG:-false}
+    depends_on:
+      - local-proxy
+    restart: unless-stopped
+    networks:
+      - mcp-client-network
+
+networks:
+  mcp-client-network:
+    external: true
+    name: mcp-client-network

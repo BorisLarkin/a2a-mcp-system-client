@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  postgres:
+    extends:
+      file: local-db/docker-compose.yml
+      service: postgres
+    networks:
+      - mcp-client-network
+  
+  local-proxy:
+    extends:
+      file: local-proxy/docker-compose.yml
+      service: local-proxy
+    networks:
+      - mcp-client-network
+  
+  telegram-bot:
+    extends:
+      file: telegram-bot/docker-compose.yml
+      service: telegram-bot
+    networks:
+      - mcp-client-network
+  
+  web-dashboard:
+    image: nginx:alpine
+    container_name: mcp-web-dashboard
+    ports:
+      - "3000:80"
+    volumes:
+      - ./web-dashboard/frontend:/usr/share/nginx/html
+    networks:
+      - mcp-client-network
+
+networks:
+  mcp-client-network:
+    driver: bridge
