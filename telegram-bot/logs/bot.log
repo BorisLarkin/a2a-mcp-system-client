@@ -1,0 +1,30 @@
+2026-02-09 18:16:43 - telegram-bot - INFO - Starting Telegram bot...
+2026-02-09 18:16:43 - telegram-bot - INFO - Bot started in polling mode. Press Ctrl+C to stop.
+2026-02-09 18:16:43 - telegram-bot - INFO - Retry loop started
+2026-02-09 18:16:43 - telegram-bot - INFO - Cleanup loop started
+2026-02-09 18:16:43 - telegram-bot - INFO - Queue monitor started
+2026-02-09 18:17:20 - telegram-bot - INFO - User 1301967588 started the bot
+2026-02-09 18:17:43 - telegram-bot - INFO - Message queue initialized
+2026-02-09 18:17:43 - telegram-bot - INFO - Loading persisted messages...
+2026-02-09 18:17:43 - telegram-bot - INFO - Loaded 0 messages from storage
+2026-02-09 18:18:13 - telegram-bot - ERROR - API request failed: Cannot connect to host localhost:8080 ssl:default [Connect call failed ('127.0.0.1', 8080)]
+2026-02-09 18:18:13 - telegram-bot - ERROR - Failed to create ticket: Cannot connect to host localhost:8080 ssl:default [Connect call failed ('127.0.0.1', 8080)]
+2026-02-09 18:18:13 - telegram-bot - ERROR - Error processing message from 1301967588: 'TicketCreate' object has no attribute 'id'
+2026-02-09 18:18:13 - telegram-bot - WARNING - Ticket saved for retry: 1301967588
+2026-02-09 18:21:43 - telegram-bot - ERROR - Queue monitor error: name 'datetime' is not defined
+2026-02-09 18:33:41 - telegram-bot - INFO - Stopping bot...
+2026-02-09 18:33:41 - telegram-bot - INFO - Cleanup loop stopped
+2026-02-09 18:33:41 - telegram-bot - INFO - Retry loop stopped
+2026-02-09 18:34:04 - telegram-bot - INFO - Starting Telegram bot...
+2026-02-09 18:34:04 - telegram-bot - INFO - Bot started in polling mode. Press Ctrl+C to stop.
+2026-02-09 18:34:04 - telegram-bot - INFO - Retry loop started
+2026-02-09 18:34:04 - telegram-bot - INFO - Cleanup loop started
+2026-02-09 18:34:04 - telegram-bot - INFO - Queue monitor started
+2026-02-09 18:34:39 - telegram-bot - INFO - User 1301967588 started the bot
+2026-02-09 18:35:04 - telegram-bot - INFO - Message queue initialized
+2026-02-09 18:35:04 - telegram-bot - INFO - Loading persisted messages...
+2026-02-09 18:35:04 - telegram-bot - INFO - Loaded 0 messages from storage
+2026-02-09 18:35:07 - telegram-bot - ERROR - API request failed: Cannot connect to host localhost:8080 ssl:default [Connect call failed ('127.0.0.1', 8080)]
+2026-02-09 18:35:07 - telegram-bot - ERROR - Failed to create ticket: Cannot connect to host localhost:8080 ssl:default [Connect call failed ('127.0.0.1', 8080)]
+2026-02-09 18:35:08 - telegram-bot - ERROR - API error for user 1301967588: Cannot connect to host localhost:8080 ssl:default [Connect call failed ('127.0.0.1', 8080)]
+2026-02-09 18:35:08 - telegram-bot - WARNING - Ticket saved for retry: 1301967588

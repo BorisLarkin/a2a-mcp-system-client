@@ -2,12 +2,21 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Установка зависимостей
+# Установка системных зависимостей
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Копирование зависимостей
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копирование исходного кода
+# Копирование кода
 COPY . .
 
+# Создание пользователя для безопасности
+RUN useradd -m -u 1000 botuser && chown -R botuser:botuser /app
+USER botuser
+
 # Запуск бота
-CMD ["python", "bot.py"]
+CMD ["python", "-m", "bot.main"]

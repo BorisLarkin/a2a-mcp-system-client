@@ -3,21 +3,24 @@ version: '3.8'
 services:
   telegram-bot:
     build: .
-    container_name: mcp-telegram-bot
+    container_name: dispatcher-telegram-bot
     environment:
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - LOCAL_API_URL=http://local-proxy:8080
-      - CLOUD_API_KEY=${CLOUD_API_KEY}
-      - DISPATCHER_ID=${DISPATCHER_ID}
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DEBUG=${DEBUG:-false}
-    depends_on:
-      - local-proxy
+      - BOT_TOKEN=${BOT_TOKEN}
+      - API_URL=${API_URL:-http://host.docker.internal:8080}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./logs:/app/logs
     restart: unless-stopped
-    networks:
-      - mcp-client-network
+    depends_on:
+      - redis  # опционально
 
-networks:
-  mcp-client-network:
-    external: true
-    name: mcp-client-network
+  # Redis для очереди сообщений (опционально)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
