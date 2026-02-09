@@ -1,3 +1,4 @@
+/*
 func (s *LocalServer) setupRoutes() {
 	// ... существующие маршруты ...
 
@@ -28,3 +29,4 @@ func (s *LocalServer) setupRoutes() {
 	r.GET("/api/v1/reports/daily", s.authMiddleware, s.handleDailyReport)
 	r.GET("/api/v1/reports/operators", s.authMiddleware, s.handleOperatorsReport)
 }
+*/

@@ -5,3 +5,5 @@ venv
 /bot/services/__pycache__
 /bot/models/__pycache__
 /bot/utils/__pycache__
+/logs
+/data
