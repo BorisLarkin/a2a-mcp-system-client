@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -21,6 +23,8 @@ import (
 	"local-proxy/internal/db"
 	"local-proxy/internal/queue"
 	"local-proxy/internal/websocket"
+
+	v1 "local-proxy/api/v1"
 )
 
 func main() {
@@ -31,7 +35,16 @@ func main() {
 	}
 
 	// Инициализация базы данных
-	dsn := db.BuildDSN(cfg.Database)
+	dbConfig := db.DatabaseConfig{
+		Host:     cfg.Database.Host,
+		Port:     cfg.Database.Port,
+		User:     cfg.Database.User,
+		Password: cfg.Database.Password,
+		Name:     cfg.Database.Name,
+		SSLMode:  cfg.Database.SSLMode,
+	}
+
+	dsn := db.BuildDSN(dbConfig)
 	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
@@ -44,7 +57,7 @@ func main() {
 
 	// Инициализация Redis
 	redisClient := redis.NewClient(&redis.Options{
-		Addr:     cfg.Redis.Host + ":" + cfg.Redis.Port,
+		Addr:     cfg.Redis.Host + ":" + strconv.Itoa(cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
 	})
@@ -111,8 +124,17 @@ func main() {
 
 			// WebSocket для реальных обновлений
 			protected.GET("/ws", func(c *gin.Context) {
-				userID := c.GetString("user_id")
-				wsManager.ServeWS(c.Writer, c.Request, userID)
+				userIDStr := c.GetString("user_id")
+
+				// Parse the user ID string to uuid.UUID
+				userID, err := uuid.Parse(userIDStr)
+				if err != nil {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
+					return
+				}
+
+				// Cast gin.ResponseWriter to http.ResponseWriter (they're compatible)
+				wsManager.ServeWS(c.Writer, c.Request, userID, "")
 			})
 
 			// Админские эндпоинты

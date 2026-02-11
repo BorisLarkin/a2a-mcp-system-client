@@ -242,6 +242,7 @@ func (m *Manager) handleRedisMessages() {
 			var data map[string]interface{}
 			if err := json.Unmarshal([]byte(msg.Payload), &data); err == nil {
 				if ticketID, ok := data["ticket_id"].(string); ok {
+					log.Printf("Ticket %v assigned", ticketID)
 					if assignedTo, ok := data["assigned_to"].(string); ok {
 						userID, err := uuid.Parse(assignedTo)
 						if err == nil {
@@ -329,6 +330,7 @@ func (c *Client) handleMessage(msg Message) {
 				// Подписываемся на обновления тикета
 				if c.Manager.redis != nil {
 					channel := fmt.Sprintf("ticket:%s", ticketID)
+					log.Printf("Channel %v has subscribed to a ticket", channel)
 					// Здесь можно добавить логику подписки
 				}
 			}

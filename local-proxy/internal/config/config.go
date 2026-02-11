@@ -4,6 +4,8 @@ package config
 import (
 	"time"
 
+	"local-proxy/internal/db" // Import the db package
+
 	"github.com/spf13/viper"
 )
 
@@ -13,16 +15,11 @@ type Config struct {
 		ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 		WriteTimeout time.Duration `mapstructure:"write_timeout"`
 		IdleTimeout  time.Duration `mapstructure:"idle_timeout"`
+		StartTime    time.Time     `mapstructure:"-"` // Игнорируем при загрузке из файла
 	} `mapstructure:"server"`
 
-	Database struct {
-		Host     string `mapstructure:"host"`
-		Port     int    `mapstructure:"port"`
-		User     string `mapstructure:"user"`
-		Password string `mapstructure:"password"`
-		Name     string `mapstructure:"name"`
-		SSLMode  string `mapstructure:"ssl_mode"`
-	} `mapstructure:"database"`
+	// Use the exported DatabaseConfig type from db package
+	Database db.DatabaseConfig `mapstructure:"database"`
 
 	Redis struct {
 		Host     string `mapstructure:"host"`
