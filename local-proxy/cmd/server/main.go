@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
@@ -29,26 +31,32 @@ import (
 
 func main() {
 	// Загрузка конфигурации
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using environment variables")
+	}
+
+	// Загрузка конфигурации
 	cfg, err := config.LoadConfig("configs/config.yaml")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
 	// Инициализация базы данных
-	dbConfig := db.DatabaseConfig{
+	dsn := db.BuildDSN(db.DatabaseConfig{
 		Host:     cfg.Database.Host,
 		Port:     cfg.Database.Port,
 		User:     cfg.Database.User,
-		Password: cfg.Database.Password,
+		Password: os.Getenv("DB_PASSWORD"), // Берем из .env
 		Name:     cfg.Database.Name,
 		SSLMode:  cfg.Database.SSLMode,
-	}
+	})
 
-	dsn := db.BuildDSN(dbConfig)
 	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
+
+	log.Println("Successfully connected to database!")
 
 	// Автомиграции (в продакшене использовать отдельные миграции)
 	if err := db.RunMigrations(gormDB); err != nil {

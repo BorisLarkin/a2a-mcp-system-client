@@ -6,7 +6,7 @@ services:
     container_name: mcp-client-postgres
     environment:
       POSTGRES_USER: mcp_client
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme123}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: mcp_client_db
     ports:
       - "5432:5432"

@@ -1,0 +1,8 @@
+# ./local-proxy/.env
+DB_PASSWORD=strong_local_password_123
+REDIS_PASSWORD=redis_password_456
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+ORCHESTRATOR_URL=http://192.168.1.100:8081
+ORCHESTRATOR_API_KEY=sk_live_abc123xyz789
+TELEGRAM_WEBHOOK_SECRET=telegram_webhook_secret_123
+TELEGRAM_WEBHOOK_URL=http://localhost:8080/api/v1/webhook/telegram

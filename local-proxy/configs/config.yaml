@@ -6,15 +6,15 @@ server:
   idle_timeout: "120s"
 
 database:
-  host: "local-db"
+  host: "172.28.0.2"
   port: 5432
-  user: "dispatcher_user"
+  user: "mcp_client"
   password: "${DB_PASSWORD}"
-  name: "dispatcher_db"
+  name: "mcp_client_db"
   ssl_mode: "disable"
 
 redis:
-  host: "redis"
+  host: "localhost"
   port: 6379
   password: "${REDIS_PASSWORD}"
   db: 0
