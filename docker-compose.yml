@@ -5,18 +5,18 @@ services:
   # 1. Локальная база данных
   local-db:
     build: ./local-db
-    container_name: dispatcher-db
+    container_name: mcp-client-db
     environment:
-      POSTGRES_DB: dispatcher_db
-      POSTGRES_USER: dispatcher_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-localpass123}
+      POSTGRES_DB: mcp_client_db
+      POSTGRES_USER: mcp_client
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./local-db/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - dispatcher-network
+      - mcp-client-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dispatcher_user"]
       interval: 10s
@@ -33,7 +33,7 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - dispatcher-network
+      - mcp-client-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -43,24 +43,24 @@ services:
   # 3. Основной сервер local-proxy
   local-proxy:
     build: ./local-proxy
-    container_name: dispatcher-proxy
+    container_name: local-proxy
     ports:
       - "8080:8080"
     environment:
-      - DB_PASSWORD=${DB_PASSWORD:-localpass123}
-      - REDIS_PASSWORD=${REDIS_PASSWORD:-redispass123}
-      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL:-http://192.168.1.100:8081}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
       - ORCHESTRATOR_API_KEY=${ORCHESTRATOR_API_KEY}
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-this}
+      - JWT_SECRET=${JWT_SECRET}
       - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
-      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL:-https://your-domain.com/api/v1/webhook/telegram}
+      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL}
     depends_on:
       local-db:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
-      - dispatcher-network
+      - mcp-client-network
     volumes:
       - ./local-proxy/configs:/root/configs
     restart: unless-stopped
@@ -76,7 +76,7 @@ services:
     depends_on:
       - local-proxy
     networks:
-      - dispatcher-network
+      - mcp-client-network
     restart: unless-stopped
 
   # 5. Веб-интерфейс (React)
@@ -91,7 +91,7 @@ services:
     depends_on:
       - local-proxy
     networks:
-      - dispatcher-network
+      - mcp-client-network
     restart: unless-stopped
 
   # 6. Nginx для проксирования (опционально, если нужен HTTPS)
@@ -109,11 +109,11 @@ services:
       - local-proxy
       - web-dashboard
     networks:
-      - dispatcher-network
+      - mcp-client-network
     restart: unless-stopped
 
 networks:
-  dispatcher-network:
+  mcp-client-network:
     driver: bridge
 
 volumes:
