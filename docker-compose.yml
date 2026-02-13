@@ -81,7 +81,9 @@ services:
 
   # 5. Веб-интерфейс (React)
   web-dashboard:
-    build: ./web-dashboard
+    build: 
+      context: ./web-dashboard/frontend  # Указываем путь к frontend
+      dockerfile: Dockerfile
     container_name: dispatcher-web
     ports:
       - "3000:80"
