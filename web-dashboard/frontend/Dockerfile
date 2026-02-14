@@ -3,32 +3,58 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Копируем package.json и package-lock.json (если есть)
+# Копируем package.json
 COPY package*.json ./
 
-# Если нет package-lock.json, используем npm install вместо npm ci
-RUN if [ -f package-lock.json ]; then \
-        npm ci; \
-    else \
-        npm install; \
-    fi
+# Очищаем кеш npm и устанавливаем зависимости
+RUN npm cache clean --force && \
+    npm install
+
+# Копируем конфигурационные файлы
+COPY vite.config.js ./
+COPY index.html ./
 
 # Копируем исходный код
-COPY . .
+COPY src ./src
+COPY public ./public
 
-# Собираем приложение
-RUN npm run build
+# Собираем приложение с дополнительной информацией
+RUN echo "Building application..." && \
+    npm run build && \
+    echo "Build complete. Contents of /app:" && \
+    ls -la /app && \
+    echo "Contents of /app/dist:" && \
+    ls -la /app/dist || echo "No dist directory"
 
 # Этап 2: Сервер
 FROM nginx:alpine
 
+# Удаляем дефолтные файлы
+RUN rm -rf /usr/share/nginx/html/*
+
 # Копируем собранные файлы
 COPY --from=builder /app/dist /usr/share/nginx/html
-# ИЛИ для create-react-app:
-# COPY --from=builder /app/build /usr/share/nginx/html
 
-# Копируем конфигурацию nginx
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Создаем конфигурацию nginx
+RUN echo 'server { \
+    listen 80; \
+    root /usr/share/nginx/html; \
+    index index.html; \
+    location / { \
+        try_files $uri $uri/ /index.html; \
+    } \
+    location /api/ { \
+        proxy_pass http://local-proxy:8080; \
+        proxy_http_version 1.1; \
+        proxy_set_header Upgrade $http_upgrade; \
+        proxy_set_header Connection "upgrade"; \
+        proxy_set_header Host $host; \
+    } \
+}' > /etc/nginx/conf.d/default.conf
+
+# Проверяем что файлы скопировались
+RUN echo "Contents of nginx html directory:" && \
+    ls -la /usr/share/nginx/html/
 
 EXPOSE 80
 
