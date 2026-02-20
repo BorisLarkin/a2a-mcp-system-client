@@ -1,4 +1,4 @@
-# docker-compose.yml
+# ~/git/a2a-mcp-system-client/docker-compose.yml
 version: '3.8'
 
 services:
@@ -6,22 +6,25 @@ services:
   local-db:
     build: ./local-db
     container_name: mcp-client-db
-    environment:
-      POSTGRES_DB: mcp_client_db
-      POSTGRES_USER: mcp_client
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    env_file:
+      - .env
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./local-db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./local-db/postgresql.conf:/etc/postgresql/postgresql.conf
     networks:
-      - mcp-client-network
+      mcp-client-network:
+        aliases:
+          - postgres
+          - db
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dispatcher_user"]
+      test: ["CMD-SHELL", "pg_isready -U mcp_client -d mcp_client_db"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   # 2. Redis для кеша и очередей
   redis:
@@ -29,16 +32,22 @@ services:
     container_name: dispatcher-redis
     ports:
       - "6379:6379"
-    command: redis-server --requirepass ${REDIS_PASSWORD:-redispass123}
+    env_file:
+      - .env
     volumes:
       - redis_data:/data
+      - ./scripts/redis-wrapper.sh:/redis-wrapper.sh  # Mount the wrapper
+    command: redis-server --requirepass ${REDIS_PASSWORD}
     networks:
-      - mcp-client-network
+      mcp-client-network:
+        aliases:
+          - redis
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
 
   # 3. Основной сервер local-proxy
   local-proxy:
@@ -46,14 +55,8 @@ services:
     container_name: local-proxy
     ports:
       - "8080:8080"
-    environment:
-      - DB_PASSWORD=${DB_PASSWORD}
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - ORCHESTRATOR_URL=${ORCHESTRATOR_URL}
-      - ORCHESTRATOR_API_KEY=${ORCHESTRATOR_API_KEY}
-      - JWT_SECRET=${JWT_SECRET}
-      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
-      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL}
+    env_file:
+      - .env
     depends_on:
       local-db:
         condition: service_healthy
@@ -61,35 +64,34 @@ services:
         condition: service_healthy
     networks:
       - mcp-client-network
-    volumes:
-      - ./local-proxy/configs:/root/configs
     restart: unless-stopped
 
   # 4. Телеграм бот
   telegram-bot:
     build: ./telegram-bot
     container_name: dispatcher-telegram-bot
-    environment:
-      - BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - API_BASE_URL=http://local-proxy:8080
-      - API_KEY=${TELEGRAM_API_KEY}
+    env_file:
+      - .env
     depends_on:
-      - local-proxy
+      local-proxy:
+        condition: service_started
+      local-db:
+        condition: service_healthy
     networks:
       - mcp-client-network
     restart: unless-stopped
 
   # 5. Веб-интерфейс (React)
   web-dashboard:
-    build: 
-      context: ./web-dashboard/frontend  # Указываем путь к frontend
+    build:
+      context: ./web-dashboard/frontend
       dockerfile: Dockerfile
     container_name: dispatcher-web
     ports:
       - "3000:80"
     environment:
-      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8080}
-      - REACT_APP_WS_URL=${REACT_APP_WS_URL:-ws://localhost:8080}
+      - REACT_APP_API_URL=http://localhost:8080
+      - REACT_APP_WS_URL=ws://localhost:8080
     depends_on:
       - local-proxy
     networks:
@@ -99,6 +101,9 @@ services:
 networks:
   mcp-client-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   postgres_data:

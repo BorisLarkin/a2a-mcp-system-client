@@ -32,7 +32,16 @@ import (
 func main() {
 	// Загрузка конфигурации
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using environment variables")
+		log.Println("No .env file found, using system environment variables")
+	}
+
+	// Check required environment variables
+	requiredVars := []string{"POSTGRES_PASSWORD", "API_KEY"}
+	log.Println("Attempting to get environment variables...")
+	for _, v := range requiredVars {
+		if os.Getenv(v) == "" {
+			log.Fatalf("Required environment variable %s is not set", v)
+		}
 	}
 
 	// Загрузка конфигурации
@@ -46,7 +55,7 @@ func main() {
 		Host:     cfg.Database.Host,
 		Port:     cfg.Database.Port,
 		User:     cfg.Database.User,
-		Password: os.Getenv("DB_PASSWORD"), // Берем из .env
+		Password: os.Getenv("POSTGRES_PASSWORD"), // Берем из .env
 		Name:     cfg.Database.Name,
 		SSLMode:  cfg.Database.SSLMode,
 	})
@@ -66,7 +75,7 @@ func main() {
 	// Инициализация Redis
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Host + ":" + strconv.Itoa(cfg.Redis.Port),
-		Password: cfg.Redis.Password,
+		Password: os.Getenv("REDIS_PASSWORD"),
 		DB:       cfg.Redis.DB,
 	})
 
