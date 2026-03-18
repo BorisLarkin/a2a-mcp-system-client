@@ -115,10 +115,10 @@ docker-compose up web-dashboard
 
 3. Добавьте обработку ответов
 
-### 📄 Лицензия
+## 📄 Лицензия
 
 Boris Larkin 2026
 
-### 📞 Контакты
+## 📞 Контакты
 
 По вопросам: borislarkin18@mail.ru
