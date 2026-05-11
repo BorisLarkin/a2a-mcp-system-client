@@ -13,6 +13,7 @@ import (
 	"local-proxy/internal/config"
 	"local-proxy/internal/db"
 	"local-proxy/internal/queue"
+	"local-proxy/internal/services"
 	"local-proxy/internal/websocket"
 )
 
@@ -21,30 +22,30 @@ type TicketHandler struct {
 	queue     *queue.TicketQueue
 	wsManager *websocket.Manager
 	config    *config.Config
+	processor *services.TicketProcessor
 }
 
-func NewTicketHandler(db *gorm.DB, queue *queue.TicketQueue, wsManager *websocket.Manager, config *config.Config) *TicketHandler {
+func NewTicketHandler(db *gorm.DB, queue *queue.TicketQueue, wsManager *websocket.Manager, config *config.Config, processor *services.TicketProcessor) *TicketHandler {
 	return &TicketHandler{
 		db:        db,
 		queue:     queue,
 		wsManager: wsManager,
 		config:    config,
+		processor: processor,
 	}
 }
 
-// CreateTicketRequest - создание тикета
 type CreateTicketRequest struct {
-	Subject   string                 `json:"subject"`
 	Text      string                 `json:"text" binding:"required"`
+	Subject   string                 `json:"subject"`
 	ClientID  *uuid.UUID             `json:"client_id"`
 	ChannelID *uuid.UUID             `json:"channel_id"`
-	Priority  string                 `json:"priority" enums:"low,medium,high,urgent"`
+	Priority  string                 `json:"priority"`
 	Metadata  map[string]interface{} `json:"metadata"`
 }
 
-// CreateTicket - создание нового тикета
 func (h *TicketHandler) CreateTicket(c *gin.Context) {
-	userID, _ := GetUserIDFromContext(c)
+	userID, _ := GetUserIDFromContext(c) // nil при публичном доступе
 
 	var req CreateTicketRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -52,23 +53,99 @@ func (h *TicketHandler) CreateTicket(c *gin.Context) {
 		return
 	}
 
-	// Получаем диспетчерскую пользователя
-	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
+	if req.Priority == "" {
+		req.Priority = "medium"
 	}
 
-	// Создаем тикет
+	var dispatcherID uuid.UUID
+	var clientID *uuid.UUID
+	var channelID *uuid.UUID
+
+	// --- Определяем диспетчерскую ---
+	if userID != uuid.Nil {
+		var user db.User
+		if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+			return
+		}
+		dispatcherID = user.DispatcherID
+	} else {
+		var dispatcher db.Dispatcher
+		if err := h.db.Where("is_active = ?", true).First(&dispatcher).Error; err != nil {
+			dispID, parseErr := uuid.Parse(h.config.Dispatcher.DispatcherID)
+			if parseErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "No active dispatcher found"})
+				return
+			}
+			dispatcherID = dispID
+		} else {
+			dispatcherID = dispatcher.ID
+		}
+	}
+
+	// --- Создаём/находим клиента (для публичного доступа) ---
+	if req.Metadata != nil {
+		if chatID, ok := req.Metadata["chat_id"]; ok {
+			var externalID string
+			switch v := chatID.(type) {
+			case float64:
+				externalID = fmt.Sprintf("%.0f", v)
+			case string:
+				externalID = v
+			default:
+				externalID = fmt.Sprintf("%v", v)
+			}
+
+			var client db.Client
+			if err := h.db.Where("external_id = ?", externalID).First(&client).Error; err != nil {
+				client = db.Client{
+					ExternalID:  externalID,
+					Name:        fmt.Sprintf("%v %v", req.Metadata["first_name"], req.Metadata["last_name"]),
+					ContactInfo: fmt.Sprintf("%v", req.Metadata["username"]),
+					Metadata:    db.JSONB(req.Metadata),
+				}
+				h.db.Create(&client)
+			}
+			clientID = &client.ID
+			req.ClientID = clientID
+		}
+	}
+
+	// Если клиент передан явно
+	if req.ClientID != nil && clientID == nil {
+		clientID = req.ClientID
+	}
+
+	// --- Создаём/находим канал ---
+	if req.Metadata != nil {
+		if chatType, ok := req.Metadata["channel_type"]; ok || true {
+			_ = chatType
+			var channel db.Channel
+			if err := h.db.Where("dispatcher_id = ? AND type = ?", dispatcherID, "telegram").First(&channel).Error; err != nil {
+				channel = db.Channel{
+					DispatcherID: dispatcherID,
+					Type:         "telegram",
+					Name:         "Telegram Bot",
+					Config: db.JSONB{
+						"chat_id": fmt.Sprintf("%v", req.Metadata["chat_id"]),
+					},
+				}
+				h.db.Create(&channel)
+			}
+			channelID = &channel.ID
+			req.ChannelID = channelID
+		}
+	}
+
+	// --- Создаём тикет ---
 	ticket := db.Ticket{
-		DispatcherID: user.DispatcherID,
-		ClientID:     req.ClientID,
-		ChannelID:    req.ChannelID,
+		DispatcherID: dispatcherID,
+		ClientID:     clientID,
+		ChannelID:    channelID,
 		Subject:      req.Subject,
 		OriginalText: req.Text,
 		Priority:     req.Priority,
 		Status:       "new",
-		CreatedAt:    time.Now(),
 	}
 
 	if err := h.db.Create(&ticket).Error; err != nil {
@@ -76,30 +153,30 @@ func (h *TicketHandler) CreateTicket(c *gin.Context) {
 		return
 	}
 
-	// Создаем первое сообщение от клиента
-	message := db.TicketMessage{
+	// --- Первое сообщение ---
+	msg := db.TicketMessage{
 		TicketID:    ticket.ID,
 		SenderType:  "client",
-		SenderID:    req.ClientID,
+		SenderID:    clientID,
 		MessageText: req.Text,
 		Metadata:    req.Metadata,
-		CreatedAt:   time.Now(),
 	}
-
-	if err := h.db.Create(&message).Error; err != nil {
-		// Откатываем тикет если не удалось создать сообщение
+	if err := h.db.Create(&msg).Error; err != nil {
 		h.db.Delete(&ticket)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create message"})
 		return
 	}
 
-	// Добавляем в очередь
-	if err := h.queue.AddTicket(c.Request.Context(), ticket.ID, user.DispatcherID); err != nil {
+	// --- В очередь ---
+	if err := h.queue.AddTicket(c.Request.Context(), ticket.ID, dispatcherID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add ticket to queue"})
 		return
 	}
 
-	// Отправляем уведомление через WebSocket
+	// --- Запуск AI-обработки ---
+	go h.processor.ProcessTicket(ticket.ID)
+
+	// --- Уведомление операторам ---
 	h.wsManager.SendToRole("operator", "ticket_created", gin.H{
 		"ticket_id":  ticket.ID,
 		"subject":    ticket.Subject,
@@ -113,7 +190,7 @@ func (h *TicketHandler) CreateTicket(c *gin.Context) {
 	})
 }
 
-// GetTicket - получение тикета по ID
+// GetTicket – получение тикета по ID
 func (h *TicketHandler) GetTicket(c *gin.Context) {
 	userID, _ := GetUserIDFromContext(c)
 
@@ -123,40 +200,25 @@ func (h *TicketHandler) GetTicket(c *gin.Context) {
 		return
 	}
 
-	// Получаем пользователя для проверки доступа
 	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
 	var ticket db.Ticket
-	query := h.db.
-		Preload("Client").
-		Preload("Channel").
-		Preload("AssignedUser").
-		Where("id = ?", ticketID)
-
-	// Операторы видят только тикеты своей диспетчерской
+	query := h.db.Preload("Client").Preload("Channel").Preload("AssignedUser").Where("id = ?", ticketID)
 	if user.Role != "admin" {
 		query = query.Where("dispatcher_id = ?", user.DispatcherID)
 	}
-
 	if err := query.First(&ticket).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
-	// Получаем сообщения
 	var messages []db.TicketMessage
-	if err := h.db.Where("ticket_id = ?", ticketID).
-		Order("created_at ASC").
-		Find(&messages).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load messages"})
-		return
-	}
+	h.db.Where("ticket_id = ?", ticketID).Order("created_at ASC").Find(&messages)
 
-	// Получаем AI анализ если есть
 	var aiAnalysis map[string]interface{}
 	if ticket.AIAnalysis != nil {
 		aiAnalysis = map[string]interface{}(ticket.AIAnalysis)
@@ -169,18 +231,16 @@ func (h *TicketHandler) GetTicket(c *gin.Context) {
 	})
 }
 
-// ListTickets - список тикетов с фильтрацией
+// ListTickets – список тикетов с фильтрацией
 func (h *TicketHandler) ListTickets(c *gin.Context) {
 	userID, _ := GetUserIDFromContext(c)
 
-	// Получаем пользователя
 	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
 
-	// Параметры запроса
 	status := c.Query("status")
 	priority := c.Query("priority")
 	category := c.Query("category")
@@ -188,18 +248,10 @@ func (h *TicketHandler) ListTickets(c *gin.Context) {
 	page := c.DefaultQuery("page", "1")
 	limit := c.DefaultQuery("limit", "50")
 
-	// Конструируем запрос
-	query := h.db.Model(&db.Ticket{}).
-		Preload("Client").
-		Preload("Channel").
-		Preload("AssignedUser")
-
-	// Фильтр по диспетчерской
+	query := h.db.Model(&db.Ticket{}).Preload("Client").Preload("Channel").Preload("AssignedUser")
 	if user.Role != "admin" {
 		query = query.Where("dispatcher_id = ?", user.DispatcherID)
 	}
-
-	// Фильтры
 	if status != "" {
 		query = query.Where("status = ?", status)
 	}
@@ -213,7 +265,6 @@ func (h *TicketHandler) ListTickets(c *gin.Context) {
 		query = query.Where("assigned_to = ?", userID)
 	}
 
-	// Пагинация
 	var total int64
 	query.Count(&total)
 
@@ -221,19 +272,13 @@ func (h *TicketHandler) ListTickets(c *gin.Context) {
 	limitInt := 50
 	fmt.Sscanf(page, "%d", &pageInt)
 	fmt.Sscanf(limit, "%d", &limitInt)
-
 	offset := (pageInt - 1) * limitInt
 	if offset < 0 {
 		offset = 0
 	}
 
-	// Выполняем запрос
 	var tickets []db.Ticket
-	if err := query.
-		Order("created_at DESC").
-		Offset(offset).
-		Limit(limitInt).
-		Find(&tickets).Error; err != nil {
+	if err := query.Order("created_at DESC").Offset(offset).Limit(limitInt).Find(&tickets).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load tickets"})
 		return
 	}
@@ -246,7 +291,7 @@ func (h *TicketHandler) ListTickets(c *gin.Context) {
 	})
 }
 
-// UpdateTicket - обновление тикета
+// UpdateTicket – обновление тикета
 func (h *TicketHandler) UpdateTicket(c *gin.Context) {
 	userID, _ := GetUserIDFromContext(c)
 
@@ -262,57 +307,45 @@ func (h *TicketHandler) UpdateTicket(c *gin.Context) {
 		return
 	}
 
-	// Проверяем доступ
 	var ticket db.Ticket
-	if err := h.db.Where("id = ?", ticketID).First(&ticket).Error; err != nil {
+	if err := h.db.First(&ticket, "id = ?", ticketID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
 	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-
 	if user.Role != "admin" && ticket.DispatcherID != user.DispatcherID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
-	// Разрешенные поля для обновления
 	allowedFields := map[string]bool{
-		"status":      true,
-		"priority":    true,
-		"category":    true,
-		"assigned_to": true,
+		"status": true, "priority": true, "category": true, "assigned_to": true,
+		"feedback_status": true,
 	}
-
-	// Фильтруем поля
 	filteredUpdate := make(map[string]interface{})
 	for key, value := range updateData {
 		if allowedFields[key] {
 			filteredUpdate[key] = value
 		}
 	}
-
 	filteredUpdate["updated_at"] = time.Now()
 
-	// Обновляем тикет
 	if err := h.db.Model(&ticket).Updates(filteredUpdate).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update ticket"})
 		return
 	}
 
-	// Если назначили оператора, обновляем очередь
 	if assignedTo, ok := updateData["assigned_to"]; ok && assignedTo != nil {
-		assignedUserID, err := uuid.Parse(assignedTo.(string))
-		if err == nil {
+		if assignedUserID, err := uuid.Parse(assignedTo.(string)); err == nil {
 			h.queue.AssignTicket(c.Request.Context(), ticketID, assignedUserID)
 		}
 	}
 
-	// Отправляем уведомление
 	h.wsManager.SendToRole("operator", "ticket_updated", gin.H{
 		"ticket_id": ticketID,
 		"updates":   filteredUpdate,
@@ -324,7 +357,7 @@ func (h *TicketHandler) UpdateTicket(c *gin.Context) {
 	})
 }
 
-// AddMessageRequest - добавление сообщения
+// AddMessageRequest – добавление сообщения
 type AddMessageRequest struct {
 	MessageText string                 `json:"message_text" binding:"required"`
 	SenderType  string                 `json:"sender_type" binding:"required,oneof=client operator ai"`
@@ -332,15 +365,9 @@ type AddMessageRequest struct {
 	Metadata    map[string]interface{} `json:"metadata"`
 }
 
-// AddMessage - добавление сообщения в тикет
 func (h *TicketHandler) AddMessage(c *gin.Context) {
 	userID, _ := GetUserIDFromContext(c)
-
-	ticketID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
-		return
-	}
+	ticketID, _ := uuid.Parse(c.Param("id"))
 
 	var req AddMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -348,57 +375,46 @@ func (h *TicketHandler) AddMessage(c *gin.Context) {
 		return
 	}
 
-	// Проверяем доступ к тикету
 	var ticket db.Ticket
-	if err := h.db.Where("id = ?", ticketID).First(&ticket).Error; err != nil {
+	if err := h.db.First(&ticket, "id = ?", ticketID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
 	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-
 	if user.Role != "admin" && ticket.DispatcherID != user.DispatcherID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
-	// Создаем сообщение
-	message := db.TicketMessage{
+	msg := db.TicketMessage{
 		TicketID:    ticketID,
 		SenderType:  req.SenderType,
 		MessageText: req.MessageText,
 		Attachments: req.Attachments,
 		Metadata:    req.Metadata,
-		CreatedAt:   time.Now(),
 	}
-
-	// Если отправитель - оператор, сохраняем его ID
 	if req.SenderType == "operator" {
-		message.SenderID = &userID
+		msg.SenderID = &userID
 	}
-
-	if err := h.db.Create(&message).Error; err != nil {
+	if err := h.db.Create(&msg).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create message"})
 		return
 	}
 
-	// Обновляем время обновления тикета
 	h.db.Model(&ticket).Update("updated_at", time.Now())
 
-	// Отправляем уведомление через WebSocket
 	h.wsManager.SendToUser(userID, "message_added", gin.H{
 		"ticket_id":   ticketID,
-		"message_id":  message.ID,
+		"message_id":  msg.ID,
 		"sender_type": req.SenderType,
 		"text":        req.MessageText,
-		"created_at":  message.CreatedAt,
+		"created_at":  msg.CreatedAt,
 	})
-
-	// Если сообщение от оператора, уведомляем других операторов
 	if req.SenderType == "operator" {
 		h.wsManager.SendToRole("operator", "ticket_updated", gin.H{
 			"ticket_id": ticketID,
@@ -407,64 +423,47 @@ func (h *TicketHandler) AddMessage(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"message_id": message.ID,
+		"message_id": msg.ID,
 		"message":    "Message added successfully",
 	})
 }
 
-// GetMessages - получение сообщений тикета
+// GetMessages – сообщения тикета
 func (h *TicketHandler) GetMessages(c *gin.Context) {
 	userID, _ := GetUserIDFromContext(c)
+	ticketID, _ := uuid.Parse(c.Param("id"))
 
-	ticketID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
-		return
-	}
-
-	// Проверяем доступ к тикету
 	var ticket db.Ticket
-	if err := h.db.Where("id = ?", ticketID).First(&ticket).Error; err != nil {
+	if err := h.db.First(&ticket, "id = ?", ticketID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
 		return
 	}
 
 	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-
 	if user.Role != "admin" && ticket.DispatcherID != user.DispatcherID {
 		c.JSON(http.StatusForbidden, gin.H{"error": "Access denied"})
 		return
 	}
 
-	// Параметры пагинации
 	page := c.DefaultQuery("page", "1")
 	limit := c.DefaultQuery("limit", "100")
-
 	pageInt := 1
 	limitInt := 100
 	fmt.Sscanf(page, "%d", &pageInt)
 	fmt.Sscanf(limit, "%d", &limitInt)
-
 	offset := (pageInt - 1) * limitInt
 	if offset < 0 {
 		offset = 0
 	}
 
-	// Получаем сообщения
 	var messages []db.TicketMessage
 	var total int64
-
 	h.db.Model(&db.TicketMessage{}).Where("ticket_id = ?", ticketID).Count(&total)
-
-	if err := h.db.Where("ticket_id = ?", ticketID).
-		Order("created_at DESC").
-		Offset(offset).
-		Limit(limitInt).
-		Find(&messages).Error; err != nil {
+	if err := h.db.Where("ticket_id = ?", ticketID).Order("created_at DESC").Offset(offset).Limit(limitInt).Find(&messages).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load messages"})
 		return
 	}

@@ -1,19 +1,15 @@
+"""
+Обработчики ошибок.
+"""
+import logging
 from aiogram import Router
 from aiogram.types import ErrorEvent
-from bot.logger import logger
 
+logger = logging.getLogger(__name__)
 router = Router()
 
-@router.error()
+
+@router.errors()
 async def error_handler(event: ErrorEvent):
-    """Глобальный обработчик ошибок"""
-    
-    logger.error(
-        f"Error occurred: {event.exception.__class__.__name__}: {event.exception}",
-        exc_info=True
-    )
-    
-    # Можно отправить сообщение админу или в мониторинг
-    # Но пользователю просто логируем ошибку
-    
-    return True  # Предотвращает дальнейшую обработку ошибки
+    logger.error(f"Update {event.update} caused error: {event.exception}")
+    return True  # подавляем ошибку, бот продолжает работать

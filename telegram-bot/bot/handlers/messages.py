@@ -1,168 +1,155 @@
-from aiogram import Router, types, F
-from aiogram.filters import StateFilter
+"""
+Обработчики входящих сообщений и callback'ов.
+"""
+import logging
+import httpx
+from aiogram import Router, Bot, F
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from typing import Optional
 
-from bot.config import config
-from bot.logger import logger
-from bot.services.api_client import APIClient
-from bot.services.rate_limiter import RateLimiter
-from bot.models.ticket import TicketCreate
-from bot.utils.validators import validate_message_length
+from bot.config import config as cfg
 
+logger = logging.getLogger(__name__)
 router = Router()
-rate_limiter = RateLimiter()
 
-class SupportStates(StatesGroup):
-    """Состояния для поддержки"""
-    waiting_for_response = State()
+# Глобальные переменные для бота
+_bot: Bot = None
 
-@router.message(F.text)
-async def handle_message(message: types.Message, state: FSMContext):
-    """Основной обработчик текстовых сообщений"""
-    
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    text = message.text
-    
-    # Проверка длины сообщения
-    if not validate_message_length(text, config.max_message_length):
-        await message.answer(
-            f"❌ Сообщение слишком длинное. Максимум {config.max_message_length} символов."
-        )
-        return
-    
-    # Проверка rate limit
-    if not rate_limiter.is_allowed(user_id):
-        await message.answer(
-            "⏳ Слишком много запросов. Пожалуйста, подождите 1 минуту."
-        )
-        return
-    
-    # Режим обслуживания
-    if config.maintenance_mode:
-        await message.answer(
-            "🔧 Система на техническом обслуживании. "
-            "Пожалуйста, повторите попытку позже."
-        )
-        return
-    
-    # Показываем статус обработки
-    status_msg = await message.answer("⏳ Обрабатываю ваш запрос...")
-    
-    try:
-        # Создаем модель тикета
-        from uuid import uuid4  # ДОБАВЛЯЕМ ИМПОРТ
-        
-        ticket_data = TicketCreate(
-            client_identifier=str(chat_id),
-            client_name=message.from_user.full_name,
-            initial_message=text,
-            metadata={
-                "message_id": message.message_id,
-                "user_id": user_id,
-                "username": message.from_user.username,
-                "is_bot": message.from_user.is_bot,
-                "language_code": message.from_user.language_code,
-                "chat_type": message.chat.type,
-            }
-        )
-        
-        # Отправляем в local-proxy
-        async with APIClient() as api_client:
-            response = await api_client.create_ticket(ticket_data)
-            
-            # Удаляем статус сообщение
-            try:
-                await status_msg.delete()
-            except:
-                pass
-            
-            # Обрабатываем ответ
-            if response.status == "failed":
-                # Ошибка API
-                logger.error(f"API error for user {user_id}: {response.error}")
-                
-                # Отправляем офлайн-ответ
-                await message.answer(config.offline_response)
-                
-                # Сохраняем для повторной отправки
-                await save_for_retry(ticket_data)
-                
-            elif response.final_response:
-                # Есть готовый ответ (от AI или оператора)
-                await message.answer(response.final_response)
-                logger.info(f"Response sent to user {user_id}")
-                
-            elif response.status == "processing":
-                # Обработка в процессе
-                await message.answer(
-                    "✅ Ваш вопрос принят в обработку. "
-                    "Ожидайте ответа от оператора."
-                )
-                
-                # Устанавливаем состояние ожидания
-                await state.set_state(SupportStates.waiting_for_response)
-                await state.update_data(ticket_id=response.ticket_id)
-                
-            else:
-                # Неизвестный статус
-                await message.answer(
-                    "Получен ваш вопрос. Ожидайте ответа."
-                )
-                
-    except Exception as e:
-        logger.error(f"Error processing message from {user_id}: {e}")
-        
-        # Удаляем статус сообщение при ошибке
-        try:
-            await status_msg.delete()
-        except:
-            pass
-        
-        # Отправляем fallback ответ
-        await message.answer(config.offline_response)
-        
-        # Сохраняем для повторной отправки
-        await save_for_retry(TicketCreate(
-            client_identifier=str(chat_id),
-            client_name=message.from_user.full_name,
-            initial_message=text,
-            metadata={"error": str(e)}
-        ))
 
-async def save_for_retry(ticket_data: TicketCreate):
-    """Сохранить тикет для повторной отправки"""
-    # В простейшем случае - логируем
-    logger.warning(f"Ticket saved for retry: {ticket_data.client_identifier}")
-    
-    # В прод версии можно сохранить в Redis или файл
-    if config.redis_enabled:
-        # Реализация с Redis
-        pass
+def set_bot(bot: Bot):
+    global _bot
+    _bot = bot
 
-@router.message(F.text, StateFilter(SupportStates.waiting_for_response))
-async def handle_followup_message(message: types.Message, state: FSMContext):
-    """Обработка дополнительных сообщений пока ждем ответ"""
-    
-    # Пользователь может отправлять уточнения пока ждем ответ
+
+def set_config(c):
+    global cfg
+    cfg = c
+
+
+class TicketStates(StatesGroup):
+    waiting_for_description = State()
+
+
+# ============ Обработчики сообщений ============
+
+@router.message(F.text == "📝 Создать обращение")
+async def create_ticket_prompt(message: Message, state: FSMContext):
+    await state.set_state(TicketStates.waiting_for_description)
     await message.answer(
-        "💬 Получил ваше уточнение. "
-        "Оператор увидит все сообщения когда возьмет ваш вопрос."
+        "📝 Пожалуйста, опишите вашу проблему.\n"
+        "Чем больше деталей, тем лучше!"
     )
-    
-    # Сохраняем уточнение в local-proxy
-    data = await state.get_data()
-    ticket_id = data.get("ticket_id")
-    
-    if ticket_id:
-        async with APIClient() as api_client:
-            await api_client._make_request(
-                "POST",
-                f"{config.api_endpoint}/{ticket_id}/followup",
-                json={
-                    "message": message.text,
-                    "message_id": message.message_id
-                }
+
+
+@router.message(F.text == "📊 Мои обращения")
+async def my_tickets(message: Message):
+    await message.answer("🔍 История обращений будет доступна в ближайшее время.")
+
+
+@router.message(TicketStates.waiting_for_description)
+async def process_description(message: Message, state: FSMContext):
+    await state.clear()
+    await _create_ticket(message)
+
+
+@router.message()
+async def default_handler(message: Message, state: FSMContext):
+    """Любое другое сообщение считаем обращением"""
+    await state.clear()
+    await _create_ticket(message)
+
+
+async def _create_ticket(message: Message):
+    """Отправка обращения в local-proxy"""
+    await message.chat.do("typing")
+
+    max_len = cfg.max_message_length if cfg else 4000
+    api_url = cfg.local_api_url if cfg else "http://local-proxy:8080"
+    api_key = cfg.api_key if cfg else ""
+
+    ticket_data = {
+        "text": message.text[:max_len],
+        "client_external_id": str(message.chat.id),
+        "channel_type": "telegram",
+        "metadata": {
+            "chat_id": message.chat.id,
+            "username": message.from_user.username,
+            "first_name": message.from_user.first_name,
+            "last_name": message.from_user.last_name,
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{api_url}/api/v1/public/tickets",
+                json=ticket_data,
+                headers={"X-API-Key": api_key}
             )
+            if resp.status_code == 201:
+                data = resp.json()
+                ticket_id = data.get("ticket_id", "unknown")
+                await message.answer(
+                    f"✅ Ваше обращение принято!\n"
+                    f"Номер тикета: <code>{ticket_id[:8]}</code>\n\n"
+                    f"⏳ Ожидайте ответа..."
+                )
+            else:
+                await message.answer(
+                    cfg.offline_response if cfg
+                    else "Спасибо за обращение! Мы ответим при первой возможности."
+                )
+                logger.error(f"API returned status {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"Failed to create ticket: {e}")
+        offline = cfg.offline_response if cfg else "Спасибо за обращение!"
+        await message.answer(offline)
+
+
+# ============ Обработчики callback'ов (кнопки) ============
+
+@router.callback_query(F.data.startswith("resolved:"))
+async def callback_resolved(callback: CallbackQuery):
+    ticket_id = callback.data.split(":", 1)[1]
+    api_url = cfg.local_api_url if cfg else "http://local-proxy:8080"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.put(
+                f"{api_url}/api/v1/tickets/{ticket_id}",
+                json={"status": "resolved", "feedback_status": "resolved"},
+            )
+    except Exception as e:
+        logger.error(f"Failed to update ticket {ticket_id}: {e}")
+
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n✅ <b>Спасибо за подтверждение!</b> Рады, что смогли помочь."
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("escalate:"))
+async def callback_escalate(callback: CallbackQuery):
+    ticket_id = callback.data.split(":", 1)[1]
+    api_url = cfg.local_api_url if cfg else "http://local-proxy:8080"
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.put(
+                f"{api_url}/api/v1/tickets/{ticket_id}",
+                json={"status": "waiting", "feedback_status": "escalate"},
+            )
+    except Exception as e:
+        logger.error(f"Failed to escalate ticket {ticket_id}: {e}")
+
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n👨‍💼 <b>Оператор уже уведомлён.</b> Ожидайте ответа."
+        )
+    except Exception:
+        pass
+    await callback.answer()

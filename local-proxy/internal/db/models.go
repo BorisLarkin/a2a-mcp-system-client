@@ -2,6 +2,10 @@
 package db
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,29 +69,32 @@ type Client struct {
 
 // Ticket - тикет (обращение)
 type Ticket struct {
-	ID            uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	ExternalID    string    `gorm:"type:varchar(500)"` // ID в SaaS системе
-	DispatcherID  uuid.UUID `gorm:"type:uuid;not null"`
-	Dispatcher    Dispatcher
-	ClientID      *uuid.UUID `gorm:"type:uuid"`
-	Client        Client
-	ChannelID     *uuid.UUID `gorm:"type:uuid"`
-	Channel       Channel
-	Subject       string `gorm:"type:varchar(500)"`
-	OriginalText  string `gorm:"type:text;not null"`
-	Status        string `gorm:"type:varchar(50);default:'new'"`    // new, in_progress, waiting, resolved, closed
-	Priority      string `gorm:"type:varchar(20);default:'medium'"` // low, medium, high, urgent
-	Category      string `gorm:"type:varchar(100)"`
-	AIResponse    string `gorm:"type:text"`
-	AIAnalysis    JSONB  `gorm:"type:jsonb"`
-	AIProcessedAt *time.Time
-	AssignedTo    *uuid.UUID `gorm:"type:uuid"`
-	AssignedUser  User       `gorm:"foreignKey:AssignedTo"`
-	AssignedAt    *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	ResolvedAt    *time.Time
-	ClosedAt      *time.Time
+	ID                   uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	ExternalID           string    `gorm:"type:varchar(500)"` // ID в SaaS системе
+	DispatcherID         uuid.UUID `gorm:"type:uuid;not null"`
+	Dispatcher           Dispatcher
+	ClientID             *uuid.UUID `gorm:"type:uuid"`
+	Client               Client
+	ChannelID            *uuid.UUID `gorm:"type:uuid"`
+	Channel              Channel
+	Subject              string  `gorm:"type:varchar(500)"`
+	OriginalText         string  `gorm:"type:text;not null"`
+	Status               string  `gorm:"type:varchar(50);default:'new'"`    // new, in_progress, waiting, resolved, closed
+	Priority             string  `gorm:"type:varchar(20);default:'medium'"` // low, medium, high, urgent
+	Category             string  `gorm:"type:varchar(100)"`
+	AIResponse           string  `gorm:"type:text"`
+	OrchestratorTicketID *string `gorm:"type:varchar(255)"` // ID тикета в SaaS
+	AIAnalysis           JSONB   `gorm:"type:jsonb"`        // полный ответ оркестратора
+	EscalatedAt          *time.Time
+	FeedbackStatus       string `gorm:"type:varchar(20);default:''"` // '' | 'resolved' | 'escalate'
+	AIProcessedAt        *time.Time
+	AssignedTo           *uuid.UUID `gorm:"type:uuid"`
+	AssignedUser         User       `gorm:"foreignKey:AssignedTo"`
+	AssignedAt           *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ResolvedAt           *time.Time
+	ClosedAt             *time.Time
 }
 
 // TicketMessage - сообщение в тикете
@@ -117,17 +124,18 @@ type TicketQueue struct {
 
 // AISettings - настройки AI для диспетчерской
 type AISettings struct {
-	ID                  uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
-	DispatcherID        uuid.UUID `gorm:"type:uuid;uniqueIndex;not null"`
-	Dispatcher          Dispatcher
-	Enabled             bool    `gorm:"default:true"`
-	AutoRespond         bool    `gorm:"default:false"`
-	ConfidenceThreshold float64 `gorm:"type:decimal(3,2);default:0.7"`
-	UseInternetSearch   bool    `gorm:"default:false"`
-	CommunicationStyle  string  `gorm:"type:varchar(50);default:'balanced'"`
-	SystemContext       string  `gorm:"type:text"`
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	ID                       uuid.UUID `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
+	DispatcherID             uuid.UUID `gorm:"type:uuid;uniqueIndex;not null"`
+	Dispatcher               Dispatcher
+	Enabled                  bool    `gorm:"default:true"`
+	AutoRespond              bool    `gorm:"default:false"`
+	ConfidenceThreshold      float64 `gorm:"type:decimal(3,2);default:0.7"`
+	UseInternetSearch        bool    `gorm:"default:false"`
+	CommunicationStyle       string  `gorm:"type:varchar(50);default:'balanced'"`
+	SystemContext            string  `gorm:"type:text"`
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	EscalationTimeoutMinutes int `gorm:"default:2"`
 }
 
 // OrchestratorLog - лог вызовов к оркестратору
@@ -151,6 +159,39 @@ type JSONB map[string]interface{}
 
 func (j JSONB) GormDataType() string {
 	return "jsonb"
+}
+
+// Scan реализует интерфейс sql.Scanner для чтения из БД
+func (j *JSONB) Scan(value interface{}) error {
+	if value == nil {
+		*j = make(JSONB)
+		return nil
+	}
+
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return errors.New(fmt.Sprint("Failed to unmarshal JSONB value:", value))
+	}
+
+	if len(bytes) == 0 {
+		*j = make(JSONB)
+		return nil
+	}
+
+	return json.Unmarshal(bytes, j)
+}
+
+// Value реализует интерфейс driver.Valuer для записи в БД
+func (j JSONB) Value() (driver.Value, error) {
+	if j == nil {
+		return nil, nil
+	}
+	return json.Marshal(j)
 }
 
 // BeforeCreate - хуки для автоматической генерации UUID

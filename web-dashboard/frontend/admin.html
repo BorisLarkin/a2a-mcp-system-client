@@ -401,7 +401,7 @@
         // Функции для работы с API
         async function checkStatus() {
             try {
-                const response = await fetch('/api/v1/health');
+                const response = await fetch('/health');
                 const data = await response.json();
                 
                 // Обновляем статус
@@ -478,7 +478,7 @@
             const message = document.getElementById('offline-message').value;
             
             try {
-                const response = await fetch('/api/v1/settings', {
+                const response = await fetch('/api/v1/admin/settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ mode, offline_message: message })

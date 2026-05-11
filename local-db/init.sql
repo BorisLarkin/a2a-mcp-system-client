@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS tickets (
     closed_at TIMESTAMP WITH TIME ZONE,
     
     -- Explicit named constraints
-    CONSTRAINT chk_tickets_status CHECK (status IN ('new', 'in_progress', 'waiting', 'resolved', 'closed')),
+    CONSTRAINT chk_tickets_status CHECK (status IN ('new', 'in_progress', 'waiting', 'waiting_for_feedback', 'resolved', 'closed')),
     CONSTRAINT chk_tickets_priority CHECK (priority IN ('low', 'medium', 'high', 'urgent'))
 );
 

@@ -20,7 +20,7 @@ redis:
   db: 0
 
 orchestrator:
-  url: "${ORCHESTRATOR_URL}"  # http://192.168.1.100:8081 (компьютер А)
+  url: "${ORCHESTRATOR_URL}"  # (компьютер А)
   api_key: "${ORCHESTRATOR_API_KEY}"
   timeout: "30s"
 
@@ -38,3 +38,4 @@ dispatcher:
   default_channel: "telegram"
   work_hours_start: "09:00"
   work_hours_end: "18:00"
+  id: "${DISPATCHER_ID}"

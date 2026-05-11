@@ -8,7 +8,19 @@ export default defineConfig({
     port: 3000,
     host: true,
     proxy: {
-      '/api': 'http://local-proxy:8080'
+      '/api': {
+        target: process.env.VITE_API_URL || 'http://local-proxy:8080',
+        changeOrigin: true,
+        rewrite: (path) => path, // Keep /api prefix
+        configure: (proxy, options) => {
+          proxy.on('error', (err, req, res) => {
+            console.log('proxy error', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, res) => {
+            console.log('Proxying:', req.method, req.url, '->', proxyReq.path);
+          });
+        }
+      }
     }
   },
   build: {

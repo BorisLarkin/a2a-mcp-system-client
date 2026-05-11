@@ -23,7 +23,10 @@ import (
 	"local-proxy/internal/auth"
 	"local-proxy/internal/config"
 	"local-proxy/internal/db"
+	"local-proxy/internal/messaging"
+	"local-proxy/internal/orchestrator"
 	"local-proxy/internal/queue"
+	"local-proxy/internal/services"
 	"local-proxy/internal/websocket"
 
 	v1 "local-proxy/api/v1"
@@ -88,6 +91,30 @@ func main() {
 	// Инициализация менеджера WebSocket
 	wsManager := websocket.NewManager()
 
+	// Создаём клиент для бота
+	botClient := messaging.NewBotClient("http://telegram-bot:8080")
+	wsManager.SetBotClient(botClient)
+
+	orchestratorURL := os.Getenv("ORCHESTRATOR_URL")
+	if orchestratorURL == "" {
+		orchestratorURL = cfg.Orchestrator.URL // fallback на значение из yaml
+	}
+
+	orchestratorClient := orchestrator.NewClient(
+		orchestratorURL,
+		os.Getenv("ORCHESTRATOR_API_KEY"),
+		30*time.Second,
+	)
+
+	// Создаём процессор тикетов
+	ticketProcessor := services.NewTicketProcessor(
+		gormDB,
+		orchestratorClient,
+		botClient,
+		wsManager,
+		os.Getenv("DISPATCHER_ID"), // UUID диспетчерской из .env
+	)
+
 	// Инициализация менеджера аутентификации
 	authManager := auth.NewManager(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenExpiry)
 
@@ -126,7 +153,7 @@ func main() {
 		protected.Use(middleware.JWTAuth(authManager))
 		{
 			// Тикеты
-			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg)
+			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor)
 			protected.GET("/tickets", ticketHandler.ListTickets)
 			protected.GET("/tickets/:id", ticketHandler.GetTicket)
 			protected.POST("/tickets", ticketHandler.CreateTicket)
@@ -176,12 +203,20 @@ func main() {
 			protected.POST("/orchestrator/generate", orchestratorHandler.GenerateResponse)
 		}
 
-		// Webhook для Telegram (без JWT, но с секретом)
+		// Webhook для Telegram и публичный API для бота (без JWT, но с API-ключом)
 		webhookGroup := apiV1.Group("/webhook")
 		webhookGroup.Use(middleware.TelegramWebhookAuth())
 		{
-			telegramHandler := v1.NewTelegramHandler(gormDB, ticketQueue, cfg, wsManager)
+			telegramHandler := v1.NewTelegramHandler(gormDB, ticketQueue, cfg, wsManager, ticketProcessor)
 			webhookGroup.POST("/telegram", telegramHandler.HandleWebhook)
+		}
+
+		// Публичный эндпоинт для создания тикетов из бота (без JWT)
+		publicGroup := apiV1.Group("/public")
+		publicGroup.Use(middleware.APIKeyAuth(os.Getenv("API_KEY")))
+		{
+			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor)
+			publicGroup.POST("/tickets", ticketHandler.CreateTicket)
 		}
 	}
 

@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +16,7 @@ import (
 	"local-proxy/internal/config"
 	"local-proxy/internal/db"
 	"local-proxy/internal/queue"
+	"local-proxy/internal/services"
 	"local-proxy/internal/websocket"
 )
 
@@ -22,14 +25,16 @@ type TelegramHandler struct {
 	queue     *queue.TicketQueue
 	config    *config.Config
 	wsManager *websocket.Manager
+	processor *services.TicketProcessor // ← добавить
 }
 
-func NewTelegramHandler(db *gorm.DB, queue *queue.TicketQueue, config *config.Config, wsManager *websocket.Manager) *TelegramHandler {
+func NewTelegramHandler(db *gorm.DB, queue *queue.TicketQueue, config *config.Config, wsManager *websocket.Manager, processor *services.TicketProcessor) *TelegramHandler {
 	return &TelegramHandler{
 		db:        db,
 		queue:     queue,
 		config:    config,
 		wsManager: wsManager,
+		processor: processor,
 	}
 }
 
@@ -96,25 +101,59 @@ type TelegramCallbackQuery struct {
 
 // HandleWebhook - обработка webhook от Telegram
 func (h *TelegramHandler) HandleWebhook(c *gin.Context) {
-	var update TelegramUpdate
+	var update struct {
+		Message struct {
+			MessageID int `json:"message_id"`
+			Chat      struct {
+				ID int64 `json:"id"`
+			} `json:"chat"`
+			Text string `json:"text"`
+		} `json:"message"`
+		CallbackQuery struct {
+			ID      string `json:"id"`
+			Data    string `json:"data"`
+			Message struct {
+				Chat struct {
+					ID int64 `json:"id"`
+				} `json:"chat"`
+			} `json:"message"`
+		} `json:"callback_query"`
+	}
 	if err := c.ShouldBindJSON(&update); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	ctx := c.Request.Context()
+	if update.Message.Text != "" {
+		// Новое сообщение от клиента
+		chatID := strconv.FormatInt(update.Message.Chat.ID, 10)
+		text := update.Message.Text
 
-	// Обрабатываем сообщение
-	if update.Message != nil && update.Message.MessageID != 0 {
-		h.handleMessage(ctx, update.Message)
+		// Ищем существующий открытый тикет для этого клиента
+		var ticket db.Ticket
+		h.db.Joins("JOIN clients ON clients.id = tickets.client_id").
+			Where("clients.external_id = ? AND tickets.status NOT IN ('resolved','closed')", chatID).
+			First(&ticket)
+
+		if ticket.ID != uuid.Nil {
+			// Добавляем сообщение к тикету
+			msg := db.TicketMessage{
+				TicketID:    ticket.ID,
+				SenderType:  "client",
+				MessageText: text,
+			}
+			h.db.Create(&msg)
+			c.JSON(200, gin.H{"status": "message added"})
+		} else {
+			// Создаём новый тикет
+			h.createTicketFromTelegram(text, chatID)
+			c.JSON(201, gin.H{"status": "new ticket"})
+		}
+	} else if update.CallbackQuery.Data != "" {
+		// Обработка кнопок
+		h.handleCallback(update.CallbackQuery)
+		c.JSON(200, gin.H{"status": "ok"})
 	}
-
-	// Обрабатываем callback query
-	if update.CallbackQuery != nil && update.CallbackQuery.ID != "" {
-		h.handleCallbackQuery(ctx, update.CallbackQuery)
-	}
-
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 // handleMessage - обработка входящего сообщения
@@ -355,4 +394,98 @@ func (h *TelegramHandler) SendTelegramMessage(c *gin.Context) {
 		"message": "Message sent successfully",
 		"chat_id": req.ChatID,
 	})
+}
+
+// createTicketFromTelegram — создаёт новый тикет из сообщения Telegram
+func (h *TelegramHandler) createTicketFromTelegram(text string, chatID string) (*db.Ticket, error) {
+	// Находим или создаём клиента
+	var client db.Client
+	if err := h.db.Where("external_id = ?", chatID).First(&client).Error; err != nil {
+		client = db.Client{
+			ExternalID:  chatID,
+			Name:        "Telegram User " + chatID,
+			ContactInfo: chatID,
+		}
+		h.db.Create(&client)
+	}
+
+	// Находим канал Telegram
+	var channel db.Channel
+	h.db.Where("type = ? AND config->>'chat_id' = ?", "telegram", chatID).First(&channel)
+
+	// Создаём тикет
+	ticket := db.Ticket{
+		DispatcherID: channel.DispatcherID,
+		ClientID:     &client.ID,
+		ChannelID:    &channel.ID,
+		Subject:      truncateText(text, 100),
+		OriginalText: text,
+		Status:       "new",
+		Priority:     "medium",
+	}
+	h.db.Create(&ticket)
+
+	// Добавляем сообщение
+	msg := db.TicketMessage{
+		TicketID:    ticket.ID,
+		SenderType:  "client",
+		SenderID:    &client.ID,
+		MessageText: text,
+	}
+	h.db.Create(&msg)
+
+	if h.processor != nil {
+		go h.processor.ProcessTicket(ticket.ID)
+	}
+
+	return &ticket, nil
+}
+
+// handleCallback — обработка callback query (кнопок)
+func (h *TelegramHandler) handleCallback(query struct {
+	ID      string `json:"id"`
+	Data    string `json:"data"`
+	Message struct {
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	} `json:"message"`
+}) {
+	// Разбираем callback_data: "resolved:uuid" или "escalate:uuid"
+	parts := strings.Split(query.Data, ":")
+	if len(parts) != 2 {
+		return
+	}
+	action := parts[0]
+	ticketID, err := uuid.Parse(parts[1])
+	if err != nil {
+		return
+	}
+
+	switch action {
+	case "resolved":
+		h.db.Model(&db.Ticket{}).Where("id = ?", ticketID).Updates(map[string]interface{}{
+			"status":          "resolved",
+			"feedback_status": "resolved",
+			"resolved_at":     time.Now(),
+		})
+	case "escalate":
+		h.db.Model(&db.Ticket{}).Where("id = ?", ticketID).Updates(map[string]interface{}{
+			"status":          "waiting",
+			"feedback_status": "escalate",
+			"escalated_at":    time.Now(),
+		})
+		// Добавляем в очередь
+		var ticket db.Ticket
+		if err := h.db.First(&ticket, "id = ?", ticketID).Error; err == nil {
+			h.queue.AddTicket(context.Background(), ticketID, ticket.DispatcherID)
+		}
+	}
+}
+
+func truncateText(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

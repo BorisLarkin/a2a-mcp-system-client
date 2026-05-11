@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"local-proxy/internal/messaging"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -41,11 +43,12 @@ type Message struct {
 }
 
 type Manager struct {
-	clients map[uuid.UUID]*Client
-	users   map[uuid.UUID][]uuid.UUID // user_id -> []client_ids
-	mu      sync.RWMutex
-	redis   *redis.Client
-	ctx     context.Context
+	clients   map[uuid.UUID]*Client
+	users     map[uuid.UUID][]uuid.UUID // user_id -> []client_ids
+	mu        sync.RWMutex
+	redis     *redis.Client
+	ctx       context.Context
+	botClient *messaging.BotClient
 }
 
 func NewManager() *Manager {
@@ -64,6 +67,10 @@ func NewManager() *Manager {
 
 func (m *Manager) SetRedisClient(redis *redis.Client) {
 	m.redis = redis
+}
+
+func (m *Manager) SetBotClient(bc *messaging.BotClient) {
+	m.botClient = bc
 }
 
 // ServeWS обработка WebSocket подключения
@@ -206,6 +213,10 @@ func (m *Manager) Broadcast(msgType string, data interface{}) {
 			go m.unregisterClient(client)
 		}
 	}
+}
+
+func (m *Manager) BroadcastMessage(msgType string, data interface{}) {
+	m.SendToRole("operator", msgType, data)
 }
 
 func (m *Manager) handleRedisMessages() {

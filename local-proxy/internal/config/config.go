@@ -51,6 +51,7 @@ type Config struct {
 		DefaultChannel      string `mapstructure:"default_channel"`
 		WorkHoursStart      string `mapstructure:"work_hours_start"`
 		WorkHoursEnd        string `mapstructure:"work_hours_end"`
+		DispatcherID        string `mapstructure:"dispatcher_id"`
 	} `mapstructure:"dispatcher"`
 }
 
