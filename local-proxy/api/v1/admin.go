@@ -114,91 +114,65 @@ type UpdateSettingsRequest struct {
 
 // UpdateSettings - обновление настроек диспетчерской
 func (h *AdminHandler) UpdateSettings(c *gin.Context) {
-	userID, _ := GetUserIDFromContext(c)
-
-	var req UpdateSettingsRequest
+	var req map[string]interface{}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		c.JSON(400, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	var user db.User
-	if err := h.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Обновляем диспетчерскую
+	// Находим диспетчерскую (первую активную)
 	var dispatcher db.Dispatcher
-	if err := h.db.Where("id = ?", user.DispatcherID).First(&dispatcher).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Dispatcher not found"})
+	if err := h.db.Where("is_active = ?", true).First(&dispatcher).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Dispatcher not found"})
 		return
 	}
 
-	if req.DispatcherName != "" {
-		dispatcher.Name = req.DispatcherName
-	}
-
-	if req.OrchestratorAPIKey != "" {
-		dispatcher.OrchestratorAPIKey = req.OrchestratorAPIKey
-	}
-
-	if req.Settings != nil {
-		dispatcher.Settings = db.JSONB(req.Settings)
-	}
-
-	dispatcher.UpdatedAt = time.Now()
-
-	if err := h.db.Save(&dispatcher).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update dispatcher"})
-		return
-	}
-
-	// Обновляем AI настройки
+	// Обновляем AISettings
 	var aiSettings db.AISettings
-	if err := h.db.Where("dispatcher_id = ?", user.DispatcherID).First(&aiSettings).Error; err != nil {
-		// Создаем если нет
-		aiSettings = db.AISettings{
-			DispatcherID: user.DispatcherID,
-			CreatedAt:    time.Now(),
-		}
+	result := h.db.Where("dispatcher_id = ?", dispatcher.ID).First(&aiSettings)
+	if result.Error != nil {
+		// Создаём, если нет
+		aiSettings = db.AISettings{DispatcherID: dispatcher.ID}
+		h.db.Create(&aiSettings)
+		h.db.Where("dispatcher_id = ?", dispatcher.ID).First(&aiSettings)
 	}
 
-	if req.AISettings.Enabled != nil {
-		aiSettings.Enabled = *req.AISettings.Enabled
+	updates := make(map[string]interface{})
+
+	if v, ok := req["enabled"]; ok {
+		updates["enabled"] = v
+	}
+	if v, ok := req["auto_respond"]; ok {
+		updates["auto_respond"] = v
+	}
+	if v, ok := req["confidence_threshold"]; ok {
+		updates["confidence_threshold"] = v
+	}
+	if v, ok := req["communication_style"]; ok {
+		updates["communication_style"] = v
+	}
+	if v, ok := req["system_context"]; ok {
+		updates["system_context"] = v
+	}
+	if v, ok := req["use_internet_search"]; ok {
+		updates["use_internet_search"] = v
+	}
+	if v, ok := req["escalation_timeout_minutes"]; ok {
+		updates["escalation_timeout_minutes"] = v
 	}
 
-	if req.AISettings.AutoRespond != nil {
-		aiSettings.AutoRespond = *req.AISettings.AutoRespond
+	if len(updates) > 0 {
+		updates["updated_at"] = time.Now()
+		h.db.Model(&aiSettings).Updates(updates)
 	}
 
-	if req.AISettings.ConfidenceThreshold != nil {
-		aiSettings.ConfidenceThreshold = *req.AISettings.ConfidenceThreshold
-	}
+	// Перезагружаем, чтобы вернуть актуальные данные
+	h.db.Where("dispatcher_id = ?", dispatcher.ID).First(&aiSettings)
 
-	if req.AISettings.UseInternetSearch != nil {
-		aiSettings.UseInternetSearch = *req.AISettings.UseInternetSearch
-	}
-
-	if req.AISettings.CommunicationStyle != nil {
-		aiSettings.CommunicationStyle = *req.AISettings.CommunicationStyle
-	}
-
-	if req.AISettings.SystemContext != nil {
-		aiSettings.SystemContext = *req.AISettings.SystemContext
-	}
-
-	aiSettings.UpdatedAt = time.Now()
-
-	if err := h.db.Save(&aiSettings).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update AI settings"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
+	c.JSON(200, gin.H{
 		"message":     "Settings updated successfully",
-		"dispatcher":  dispatcher,
 		"ai_settings": aiSettings,
+		"dispatcher":  dispatcher,
 	})
 }
 

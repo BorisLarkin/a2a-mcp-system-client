@@ -4,6 +4,7 @@ package v1
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +13,7 @@ import (
 
 	"local-proxy/internal/config"
 	"local-proxy/internal/db"
+	"local-proxy/internal/messaging"
 	"local-proxy/internal/queue"
 	"local-proxy/internal/services"
 	"local-proxy/internal/websocket"
@@ -23,15 +25,17 @@ type TicketHandler struct {
 	wsManager *websocket.Manager
 	config    *config.Config
 	processor *services.TicketProcessor
+	botClient *messaging.BotClient
 }
 
-func NewTicketHandler(db *gorm.DB, queue *queue.TicketQueue, wsManager *websocket.Manager, config *config.Config, processor *services.TicketProcessor) *TicketHandler {
+func NewTicketHandler(db *gorm.DB, queue *queue.TicketQueue, wsManager *websocket.Manager, config *config.Config, processor *services.TicketProcessor, botClient *messaging.BotClient) *TicketHandler {
 	return &TicketHandler{
 		db:        db,
 		queue:     queue,
 		wsManager: wsManager,
 		config:    config,
 		processor: processor,
+		botClient: botClient,
 	}
 }
 
@@ -253,7 +257,8 @@ func (h *TicketHandler) ListTickets(c *gin.Context) {
 		query = query.Where("dispatcher_id = ?", user.DispatcherID)
 	}
 	if status != "" {
-		query = query.Where("status = ?", status)
+		statuses := strings.Split(status, ",")
+		query = query.Where("status IN ?", statuses)
 	}
 	if priority != "" {
 		query = query.Where("priority = ?", priority)
@@ -357,12 +362,53 @@ func (h *TicketHandler) UpdateTicket(c *gin.Context) {
 	})
 }
 
+// UpdateFeedback — обновление статуса тикета по callback от кнопок (публичный доступ)
+func (h *TicketHandler) UpdateFeedback(c *gin.Context) {
+	ticketID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	var req struct {
+		Status         string `json:"status"`
+		FeedbackStatus string `json:"feedback_status"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	updates := map[string]interface{}{
+		"updated_at": time.Now(),
+	}
+	if req.Status != "" {
+		updates["status"] = req.Status
+	}
+	if req.FeedbackStatus != "" {
+		updates["feedback_status"] = req.FeedbackStatus
+	}
+
+	if err := h.db.Model(&db.Ticket{}).Where("id = ?", ticketID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update ticket"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Feedback updated"})
+}
+
 // AddMessageRequest – добавление сообщения
 type AddMessageRequest struct {
 	MessageText string                 `json:"message_text" binding:"required"`
 	SenderType  string                 `json:"sender_type" binding:"required,oneof=client operator ai"`
 	Attachments map[string]interface{} `json:"attachments"`
 	Metadata    map[string]interface{} `json:"metadata"`
+}
+
+func parseChatID(externalID string) int64 {
+	var id int64
+	fmt.Sscanf(externalID, "%d", &id)
+	return id
 }
 
 func (h *TicketHandler) AddMessage(c *gin.Context) {
@@ -420,6 +466,25 @@ func (h *TicketHandler) AddMessage(c *gin.Context) {
 			"ticket_id": ticketID,
 			"action":    "message_added",
 		})
+	}
+
+	// Если сообщение от оператора — отправляем клиенту через бота
+	if req.SenderType == "operator" {
+		// Загружаем тикет с клиентом
+		var ticket db.Ticket
+		if err := h.db.Preload("Client").First(&ticket, "id = ?", ticketID).Error; err == nil {
+			if ticket.Client.ID != uuid.Nil {
+				chatID := parseChatID(ticket.Client.ExternalID)
+				if chatID != 0 {
+					// Вызываем бота
+					botClient := messaging.NewBotClient("http://telegram-bot:8080")
+					if err := botClient.SendMessage(chatID, req.MessageText, ticketID.String()); err != nil {
+						// Логируем, но не фейлим запрос
+						fmt.Printf("Failed to send operator message to client: %v\n", err)
+					}
+				}
+			}
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{

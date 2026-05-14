@@ -1,9 +1,7 @@
-// ./local-proxy/api/v1/auth.go
 package v1
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -11,7 +9,6 @@ import (
 
 	"local-proxy/internal/auth"
 	"local-proxy/internal/db"
-	"local-proxy/pkg/utils"
 )
 
 type AuthHandler struct {
@@ -20,45 +17,42 @@ type AuthHandler struct {
 }
 
 func NewAuthHandler(authManager *auth.Manager, db *gorm.DB) *AuthHandler {
-	return &AuthHandler{
-		authManager: authManager,
-		db:          db,
-	}
+	return &AuthHandler{authManager: authManager, db: db}
 }
 
-// LoginRequest - запрос на вход
 type LoginRequest struct {
-	Username string `json:"username" binding:"required,min=3,max=100"`
-	Password string `json:"password" binding:"required,min=6"`
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"`
 }
 
-// LoginResponse - ответ с токенами
 type LoginResponse struct {
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	UserID       uuid.UUID `json:"user_id"`
-	Username     string    `json:"username"`
-	Role         string    `json:"role"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	User         UserInfo `json:"user"`
 }
 
-// Login - вход пользователя
+type UserInfo struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+}
+
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
 
-	// Находим пользователя
+	// Ищем пользователя
 	var user db.User
-	if err := h.db.Where("username = ? AND is_active = true", req.Username).First(&user).Error; err != nil {
+	if err := h.db.Where("username = ? AND is_active = ?", req.Username, true).First(&user).Error; err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
 
-	// Проверяем пароль
-	if !utils.VerifyPassword(user.PasswordHash, req.Password) {
+	// Проверяем пароль (пока простое сравнение, т.к. хеши не используются)
+	if user.PasswordHash != req.Password {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -69,108 +63,69 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
-
 	refreshToken, err := h.authManager.GenerateRefreshToken(user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
-		return
-	}
-
-	// Обновляем время последнего входа
-	now := time.Now()
-	user.LastLoginAt = &now
-	h.db.Save(&user)
-
-	// Возвращаем ответ
-	expiresAt := time.Now().Add(24 * time.Hour) // 24 часа для access token
-
-	c.JSON(http.StatusOK, LoginResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		UserID:       user.ID,
-		Username:     user.Username,
-		Role:         user.Role,
-		ExpiresAt:    expiresAt,
-	})
-}
-
-// RefreshTokenRequest - запрос на обновление токена
-type RefreshTokenRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
-}
-
-// RefreshToken - обновление access токена
-func (h *AuthHandler) RefreshToken(c *gin.Context) {
-	var req RefreshTokenRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-
-	// Парсим refresh токен
-	claims, err := h.authManager.ParseToken(req.RefreshToken)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid refresh token"})
-		return
-	}
-
-	// Находим пользователя
-	var user db.User
-	if err := h.db.Where("id = ? AND is_active = true", claims.UserID).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Генерируем новый access токен
-	accessToken, err := h.authManager.GenerateAccessToken(user.ID, user.Username, user.Role)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
-	// Генерируем новый refresh токен
-	refreshToken, err := h.authManager.GenerateRefreshToken(user.ID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate refresh token"})
+	c.JSON(http.StatusOK, LoginResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		User: UserInfo{
+			ID:       user.ID.String(),
+			Username: user.Username,
+			Role:     user.Role,
+		},
+	})
+}
+
+func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	var req struct {
+		RefreshToken string `json:"refresh_token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "refresh_token required"})
 		return
 	}
 
-	expiresAt := time.Now().Add(24 * time.Hour)
+	claims, err := h.authManager.ParseToken(req.RefreshToken)
+	if err != nil {
+		c.JSON(401, gin.H{"error": "Invalid refresh token"})
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
+	userID, _ := uuid.Parse(claims.Subject)
+	var user db.User
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
+		c.JSON(401, gin.H{"error": "User not found"})
+		return
+	}
+
+	accessToken, _ := h.authManager.GenerateAccessToken(user.ID, user.Username, user.Role)
+	refreshToken, _ := h.authManager.GenerateRefreshToken(user.ID)
+
+	c.JSON(200, gin.H{
 		"access_token":  accessToken,
 		"refresh_token": refreshToken,
-		"expires_at":    expiresAt,
+		"user": gin.H{
+			"id":       user.ID.String(),
+			"username": user.Username,
+			"role":     user.Role,
+		},
 	})
 }
 
-// Logout - выход пользователя (на клиенте просто удаляем токен)
-func (h *AuthHandler) Logout(c *gin.Context) {
-	// В stateless JWT логаут реализуется на клиенте
-	// Можно добавить blacklist токенов в Redis при необходимости
+func (h *AuthHandler) Me(c *gin.Context) {
+	userID, _ := GetUserIDFromContext(c)
+	username, _ := GetUsernameFromContext(c)
+	role, _ := GetRoleFromContext(c)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Successfully logged out",
-	})
-}
-
-// Profile - получение профиля текущего пользователя
-func (h *AuthHandler) Profile(c *gin.Context) {
-	userID, err := GetUserIDFromContext(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
-		return
-	}
-
-	var user db.User
-	if err := h.db.Select("id", "username", "email", "full_name", "role", "created_at").
-		Where("id = ?", userID).
-		First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"user": user,
+		"user": UserInfo{
+			ID:       userID.String(),
+			Username: username,
+			Role:     role,
+		},
 	})
 }

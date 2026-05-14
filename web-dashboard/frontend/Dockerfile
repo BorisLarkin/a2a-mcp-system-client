@@ -11,7 +11,7 @@ RUN npm cache clean --force && \
     npm install
 
 # Копируем конфигурационные файлы
-COPY vite.config.js ./
+COPY vite.config.ts ./
 COPY index.html ./
 
 # Копируем исходный код

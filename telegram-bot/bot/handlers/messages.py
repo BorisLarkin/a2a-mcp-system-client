@@ -113,12 +113,14 @@ async def _create_ticket(message: Message):
 async def callback_resolved(callback: CallbackQuery):
     ticket_id = callback.data.split(":", 1)[1]
     api_url = cfg.local_api_url if cfg else "http://local-proxy:8080"
+    api_key = cfg.api_key if cfg else ""
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.put(
-                f"{api_url}/api/v1/tickets/{ticket_id}",
+                f"{api_url}/api/v1/public/tickets/{ticket_id}/feedback",
                 json={"status": "resolved", "feedback_status": "resolved"},
+                headers={"X-API-Key": api_key}
             )
     except Exception as e:
         logger.error(f"Failed to update ticket {ticket_id}: {e}")
@@ -136,12 +138,14 @@ async def callback_resolved(callback: CallbackQuery):
 async def callback_escalate(callback: CallbackQuery):
     ticket_id = callback.data.split(":", 1)[1]
     api_url = cfg.local_api_url if cfg else "http://local-proxy:8080"
+    api_key = cfg.api_key if cfg else ""
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.put(
-                f"{api_url}/api/v1/tickets/{ticket_id}",
+                f"{api_url}/api/v1/public/tickets/{ticket_id}/feedback",
                 json={"status": "waiting", "feedback_status": "escalate"},
+                headers={"X-API-Key": api_key}
             )
     except Exception as e:
         logger.error(f"Failed to escalate ticket {ticket_id}: {e}")

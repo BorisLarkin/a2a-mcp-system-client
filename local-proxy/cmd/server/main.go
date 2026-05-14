@@ -152,8 +152,12 @@ func main() {
 		protected := apiV1.Group("")
 		protected.Use(middleware.JWTAuth(authManager))
 		{
+			// Authentication
+			authHandler := v1.NewAuthHandler(authManager, gormDB)
+			protected.GET("/auth/me", authHandler.Me)
+
 			// Тикеты
-			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor)
+			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor, botClient)
 			protected.GET("/tickets", ticketHandler.ListTickets)
 			protected.GET("/tickets/:id", ticketHandler.GetTicket)
 			protected.POST("/tickets", ticketHandler.CreateTicket)
@@ -215,8 +219,9 @@ func main() {
 		publicGroup := apiV1.Group("/public")
 		publicGroup.Use(middleware.APIKeyAuth(os.Getenv("API_KEY")))
 		{
-			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor)
+			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor, botClient)
 			publicGroup.POST("/tickets", ticketHandler.CreateTicket)
+			publicGroup.PUT("/tickets/:id/feedback", ticketHandler.UpdateFeedback)
 		}
 	}
 
