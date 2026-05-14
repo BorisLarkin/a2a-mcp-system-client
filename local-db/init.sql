@@ -164,6 +164,22 @@ CREATE TABLE IF NOT EXISTS orchestrator_logs (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS agents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    dispatcher_id UUID REFERENCES dispatchers(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    endpoint VARCHAR(512) NOT NULL,
+    agent_type VARCHAR(100) NOT NULL,
+    capabilities JSONB DEFAULT '[]'::jsonb,
+    skills JSONB DEFAULT '[]'::jsonb,
+    status VARCHAR(50) DEFAULT 'pending',
+    auth_token VARCHAR(512),
+    last_heartbeat TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- ========== ИНДЕКСЫ (ОТДЕЛЬНО ОТ ТАБЛИЦ) ==========
 
 -- Индексы для users

@@ -199,6 +199,9 @@ func main() {
 				adminGroup.POST("/channels", adminHandler.CreateChannel)
 				adminGroup.PUT("/channels/:id", adminHandler.UpdateChannel)
 				adminGroup.GET("/analytics", adminHandler.GetAnalytics)
+				adminGroup.GET("/agents", adminHandler.ListAgents)
+				adminGroup.POST("/agents", adminHandler.CreateAgent)
+				adminGroup.DELETE("/agents/:id", adminHandler.DeleteAgent)
 			}
 
 			// Внешний вызов оркестратора

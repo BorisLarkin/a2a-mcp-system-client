@@ -2,6 +2,7 @@
 package v1
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"local-proxy/api/middleware"
 	"local-proxy/internal/config"
 	"local-proxy/internal/db"
 	"local-proxy/pkg/utils"
@@ -631,4 +633,95 @@ func (h *AdminHandler) GetAnalytics(c *gin.Context) {
 		"category_stats": categoryStats,
 		"operator_stats": operatorStats,
 	})
+}
+
+// ListAgents — список агентов диспетчерской
+func (h *AdminHandler) ListAgents(c *gin.Context) {
+	dispatcherID := h.getDispatcherID(c)
+	var agents []db.Agent
+	h.db.Where("dispatcher_id = ?", dispatcherID).Find(&agents)
+	c.JSON(200, gin.H{"agents": agents})
+}
+
+// CreateAgent — регистрация нового агента
+func (h *AdminHandler) CreateAgent(c *gin.Context) {
+	var req struct {
+		Endpoint string `json:"endpoint" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	dispatcherID := h.getDispatcherID(c)
+
+	// Опрашиваем Agent Card
+	card, err := fetchAgentCard(req.Endpoint)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Failed to fetch agent card: " + err.Error()})
+		return
+	}
+
+	agent := db.Agent{
+		DispatcherID: dispatcherID,
+		Name:         getString(card, "name"),
+		Endpoint:     req.Endpoint,
+		AgentType:    getString(card, "type"),
+		Capabilities: toJSON(card["capabilities"]),
+		Skills:       toJSON(card["skills"]),
+		Status:       "online",
+		Metadata:     toJSON(card),
+	}
+
+	if err := h.db.Create(&agent).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to save agent"})
+		return
+	}
+
+	c.JSON(201, gin.H{"agent": agent})
+}
+
+// DeleteAgent — удаление агента
+func (h *AdminHandler) DeleteAgent(c *gin.Context) {
+	agentID, _ := uuid.Parse(c.Param("id"))
+	h.db.Delete(&db.Agent{}, "id = ?", agentID)
+	c.JSON(200, gin.H{"message": "Agent deleted"})
+}
+
+func fetchAgentCard(endpoint string) (map[string]interface{}, error) {
+	resp, err := http.Get(endpoint + "/.well-known/agent.json")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var card map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&card)
+	return card, nil
+}
+
+func getString(m map[string]interface{}, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func toJSON(v interface{}) db.JSONB {
+	data, _ := json.Marshal(v)
+	return db.JSONB{"raw": string(data)}
+}
+
+// getDispatcherID извлекает ID диспетчерской текущего пользователя
+func (h *AdminHandler) getDispatcherID(c *gin.Context) uuid.UUID {
+	userID, err := middleware.GetUserIDFromContext(c)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return uuid.Nil
+	}
+	var user db.User
+	if err := h.db.First(&user, "id = ?", userID).Error; err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "User not found"})
+		return uuid.Nil
+	}
+	return user.DispatcherID
 }
