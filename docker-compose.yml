@@ -64,6 +64,8 @@ services:
         condition: service_healthy
     networks:
       - mcp-client-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   # 4. Телеграм бот
@@ -97,6 +99,25 @@ services:
     networks:
       - mcp-client-network
     restart: unless-stopped
+  
+    # Корпоративный агент
+  corp-agent:
+    build: ./template-corp-agent
+    container_name: mcp-corp-agent
+    ports:
+      - "9004:8080"
+    networks:
+      - mcp-client-network
+    environment:
+      - AGENT_NAME=corporate-agent-v1
+      - AGENT_TYPE=corporate
+      - DB_API_URL=http://local-proxy:8080
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   mcp-client-network:

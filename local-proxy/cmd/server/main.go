@@ -39,7 +39,7 @@ func main() {
 	}
 
 	// Check required environment variables
-	requiredVars := []string{"POSTGRES_PASSWORD", "API_KEY"}
+	requiredVars := []string{"POSTGRES_PASSWORD", "ORCHESTRATOR_URL"}
 	log.Println("Attempting to get environment variables...")
 	for _, v := range requiredVars {
 		if os.Getenv(v) == "" {
@@ -100,20 +100,35 @@ func main() {
 		orchestratorURL = cfg.Orchestrator.URL // fallback на значение из yaml
 	}
 
+	orchestratorAPIKey := os.Getenv("ORCHESTRATOR_API_KEY")
+	if orchestratorAPIKey == "" {
+		orchestratorAPIKey = "sk_test_123456" // fallback для тестов
+	}
 	orchestratorClient := orchestrator.NewClient(
 		orchestratorURL,
-		os.Getenv("ORCHESTRATOR_API_KEY"),
+		orchestratorAPIKey,
 		30*time.Second,
 	)
 
-	// Создаём процессор тикетов
-	ticketProcessor := services.NewTicketProcessor(
-		gormDB,
-		orchestratorClient,
-		botClient,
-		wsManager,
-		os.Getenv("DISPATCHER_ID"), // UUID диспетчерской из .env
-	)
+	// Проверка, нужен ли setup
+	var dispatcher db.Dispatcher
+	setupRequired := gormDB.Where("is_active = ?", true).First(&dispatcher).Error != nil
+
+	// Если диспетчерская есть — создаём процессор
+	var ticketProcessor *services.TicketProcessor
+	if !setupRequired {
+		log.Printf("Using dispatcher: %s (ID: %s)", dispatcher.Name, dispatcher.ID)
+		ticketProcessor = services.NewTicketProcessor(
+			gormDB,
+			orchestratorClient,
+			botClient,
+			wsManager,
+			dispatcher.ID.String(),
+		)
+	} else {
+		log.Println("WARNING: No active dispatcher found. Ticket processing disabled until setup is complete.")
+		ticketProcessor = nil
+	}
 
 	// Инициализация менеджера аутентификации
 	authManager := auth.NewManager(cfg.Auth.JWTSecret, cfg.Auth.AccessTokenExpiry)
@@ -139,15 +154,24 @@ func main() {
 
 	// API v1 группа
 	apiV1 := router.Group("/api/v1")
-	{
-		// Публичные эндпоинты (без аутентификации)
-		authGroup := apiV1.Group("/auth")
-		{
-			authHandler := v1.NewAuthHandler(authManager, gormDB)
-			authGroup.POST("/login", authHandler.Login)
-			authGroup.POST("/refresh", authHandler.RefreshToken)
-		}
 
+	// Auth endpoints доступны всегда (и в setup, и в обычном режиме)
+	authHandler := v1.NewAuthHandler(authManager, gormDB)
+	apiV1.POST("/auth/login", authHandler.Login)
+	apiV1.POST("/auth/refresh", authHandler.RefreshToken)
+
+	if setupRequired {
+		// Режим setup: доступен только эндпоинт setup
+		setupHandler := v1.NewSetupHandler(gormDB, cfg)
+		apiV1.POST("/setup", setupHandler.Setup)
+		apiV1.GET("/setup/status", func(c *gin.Context) {
+			c.JSON(200, gin.H{"setup_required": true})
+		})
+		// Все остальные запросы возвращают 503
+		router.NoRoute(func(c *gin.Context) {
+			c.JSON(503, gin.H{"error": "Setup required", "setup_required": true})
+		})
+	} else {
 		// Защищенные эндпоинты (требуется JWT)
 		protected := apiV1.Group("")
 		protected.Use(middleware.JWTAuth(authManager))

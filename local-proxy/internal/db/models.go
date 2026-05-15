@@ -16,7 +16,7 @@ import (
 type Dispatcher struct {
 	ID                       uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()"`
 	Name                     string     `gorm:"not null"`
-	OrchestratorAPIKey       string     `gorm:"type:varchar(500)"`
+	OrchestratorAPIKey       string     `gorm:"type:varchar(500);column:orchestrator_api_key" json:"orchestrator_api_key"`
 	OrchestratorDispatcherID *uuid.UUID `gorm:"type:uuid"`
 	Settings                 JSONB      `gorm:"type:jsonb;default:'{}'"`
 	IsActive                 bool       `gorm:"default:true"`

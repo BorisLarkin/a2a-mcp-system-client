@@ -2,8 +2,10 @@
 package v1
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -643,44 +645,6 @@ func (h *AdminHandler) ListAgents(c *gin.Context) {
 	c.JSON(200, gin.H{"agents": agents})
 }
 
-// CreateAgent — регистрация нового агента
-func (h *AdminHandler) CreateAgent(c *gin.Context) {
-	var req struct {
-		Endpoint string `json:"endpoint" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-
-	dispatcherID := h.getDispatcherID(c)
-
-	// Опрашиваем Agent Card
-	card, err := fetchAgentCard(req.Endpoint)
-	if err != nil {
-		c.JSON(400, gin.H{"error": "Failed to fetch agent card: " + err.Error()})
-		return
-	}
-
-	agent := db.Agent{
-		DispatcherID: dispatcherID,
-		Name:         getString(card, "name"),
-		Endpoint:     req.Endpoint,
-		AgentType:    getString(card, "type"),
-		Capabilities: toJSON(card["capabilities"]),
-		Skills:       toJSON(card["skills"]),
-		Status:       "online",
-		Metadata:     toJSON(card),
-	}
-
-	if err := h.db.Create(&agent).Error; err != nil {
-		c.JSON(500, gin.H{"error": "Failed to save agent"})
-		return
-	}
-
-	c.JSON(201, gin.H{"agent": agent})
-}
-
 // DeleteAgent — удаление агента
 func (h *AdminHandler) DeleteAgent(c *gin.Context) {
 	agentID, _ := uuid.Parse(c.Param("id"))
@@ -688,15 +652,82 @@ func (h *AdminHandler) DeleteAgent(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "Agent deleted"})
 }
 
-func fetchAgentCard(endpoint string) (map[string]interface{}, error) {
-	resp, err := http.Get(endpoint + "/.well-known/agent.json")
-	if err != nil {
-		return nil, err
+// CreateAgent — регистрация нового агента (отправляет запрос в оркестратор)
+func (h *AdminHandler) CreateAgent(c *gin.Context) {
+	var req struct {
+		Endpoint string `json:"endpoint" binding:"required"`
 	}
-	defer resp.Body.Close()
-	var card map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&card)
-	return card, nil
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	dispatcherID := h.getDispatcherID(c)
+	if dispatcherID == uuid.Nil {
+		return
+	}
+
+	// Отправляем запрос в оркестратор — он сам проверит карточку
+	orchURL := h.config.Orchestrator.URL + "/api/v1/agents"
+
+	requestBody, _ := json.Marshal(map[string]string{
+		"endpoint":      req.Endpoint,
+		"dispatcher_id": dispatcherID.String(),
+	})
+
+	httpClient := &http.Client{Timeout: 15 * time.Second}
+
+	// Получаем API-ключ диспетчерской
+	var dispatcher db.Dispatcher
+	if err := h.db.First(&dispatcher, "id = ?", dispatcherID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Dispatcher not found"})
+		return
+	}
+
+	orchReq, _ := http.NewRequest("POST", orchURL, bytes.NewReader(requestBody))
+	orchReq.Header.Set("Content-Type", "application/json")
+	orchReq.Header.Set("X-API-Key", dispatcher.OrchestratorAPIKey)
+
+	orchResp, err := httpClient.Do(orchReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Orchestrator unreachable: " + err.Error()})
+		return
+	}
+	defer orchResp.Body.Close()
+
+	if orchResp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(orchResp.Body)
+		c.JSON(orchResp.StatusCode, gin.H{"error": "Orchestrator rejected: " + string(body)})
+		return
+	}
+
+	// Парсим ответ оркестратора
+	var orchResult struct {
+		Agent   db.Agent `json:"agent"`
+		Message string   `json:"message"`
+	}
+	json.NewDecoder(orchResp.Body).Decode(&orchResult)
+
+	// Сохраняем агента в локальной БД
+	agent := orchResult.Agent
+
+	// Нормализуем capabilities и skills под формат клиентской БД
+	agent.Capabilities = normalizeJSONB(agent.Capabilities)
+	agent.Skills = normalizeJSONB(agent.Skills)
+	agent.Metadata = normalizeJSONB(agent.Metadata)
+
+	agent.DispatcherID = dispatcherID
+	agent.ID = uuid.New()
+
+	if err := h.db.Create(&agent).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save agent locally: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"agent":   orchResult.Agent,
+		"message": "Agent registered in orchestrator and saved locally",
+	})
 }
 
 func getString(m map[string]interface{}, key string) string {
@@ -724,4 +755,27 @@ func (h *AdminHandler) getDispatcherID(c *gin.Context) uuid.UUID {
 		return uuid.Nil
 	}
 	return user.DispatcherID
+}
+
+// normalizeJSONB приводит любые данные к формату клиентской БД {"raw": "json-string"}
+func normalizeJSONB(v interface{}) db.JSONB {
+	if v == nil {
+		return db.JSONB{"raw": "[]"}
+	}
+	// Если уже в формате {"raw": "..."}, возвращаем как есть
+	if m, ok := v.(map[string]interface{}); ok {
+		if raw, hasRaw := m["raw"]; hasRaw && raw != nil {
+			return db.JSONB(m)
+		}
+	}
+	// Если это строка "null" — заменяем на пустой массив
+	if s, ok := v.(string); ok && (s == "null" || s == "") {
+		return db.JSONB{"raw": "[]"}
+	}
+	// Иначе оборачиваем в {"raw": json-string}
+	data, _ := json.Marshal(v)
+	if string(data) == "null" {
+		return db.JSONB{"raw": "[]"}
+	}
+	return db.JSONB{"raw": string(data)}
 }

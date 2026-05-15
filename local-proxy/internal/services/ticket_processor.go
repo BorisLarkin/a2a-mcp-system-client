@@ -157,6 +157,17 @@ func extractCategory(classification map[string]interface{}) string {
 }
 
 func (tp *TicketProcessor) addToQueue(ticket db.Ticket) {
+	// Проверяем, не в очереди ли уже тикет
+	var existing db.TicketQueue
+	if err := tp.db.Where("ticket_id = ?", ticket.ID).First(&existing).Error; err == nil {
+		// Уже в очереди — обновляем приоритет
+		tp.db.Model(&existing).Updates(map[string]interface{}{
+			"priority_score": calculatePriority(ticket),
+			"queued_at":      time.Now(),
+		})
+		return
+	}
+
 	pq := db.TicketQueue{
 		TicketID:      ticket.ID,
 		DispatcherID:  ticket.DispatcherID,
