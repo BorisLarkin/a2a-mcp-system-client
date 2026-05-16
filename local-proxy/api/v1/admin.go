@@ -173,6 +173,22 @@ func (h *AdminHandler) UpdateSettings(c *gin.Context) {
 	// Перезагружаем, чтобы вернуть актуальные данные
 	h.db.Where("dispatcher_id = ?", dispatcher.ID).First(&aiSettings)
 
+	// Синхронизируем с оркестратором
+	go func(dispID uuid.UUID, apiKey string) {
+		configJSON, _ := json.Marshal(map[string]interface{}{
+			"communication_style":  req["communication_style"],
+			"confidence_threshold": req["confidence_threshold"],
+			"company_context":      req["system_context"],
+		})
+
+		orchURL := h.config.Orchestrator.URL + "/api/v1/dispatchers/" + dispID.String() + "/config"
+		httpClient := &http.Client{Timeout: 10 * time.Second}
+		orchReq, _ := http.NewRequest("PUT", orchURL, bytes.NewReader(configJSON))
+		orchReq.Header.Set("Content-Type", "application/json")
+		orchReq.Header.Set("X-API-Key", apiKey)
+		httpClient.Do(orchReq)
+	}(dispatcher.ID, dispatcher.OrchestratorAPIKey)
+
 	c.JSON(200, gin.H{
 		"message":     "Settings updated successfully",
 		"ai_settings": aiSettings,
@@ -554,15 +570,17 @@ func (h *AdminHandler) GetAnalytics(c *gin.Context) {
 		Where("created_at BETWEEN ? AND ?", fromTime, toTime).
 		Count(&ticketStats.Resolved)
 
-	h.db.Model(&db.Ticket{}).
-		Where("dispatcher_id = ? AND metadata->>'ai_resolved' = ?", user.DispatcherID, "true").
-		Where("created_at BETWEEN ? AND ?", fromTime, toTime).
-		Count(&ticketStats.AutoResolved)
+	// Авто-решенные тикеты (статус resolved ИЛИ waiting_for_feedback)
+	h.db.Model(&db.Ticket{}).Where(
+		"dispatcher_id = ? AND status IN ('resolved','waiting_for_feedback') AND created_at BETWEEN ? AND ?",
+		user.DispatcherID, fromTime, toTime,
+	).Count(&ticketStats.AutoResolved)
 
-	h.db.Model(&db.Ticket{}).
-		Where("dispatcher_id = ? AND metadata->>'escalated' = ?", user.DispatcherID, "true").
-		Where("created_at BETWEEN ? AND ?", fromTime, toTime).
-		Count(&ticketStats.Escalated)
+	// Эскалированные (статус waiting)
+	h.db.Model(&db.Ticket{}).Where(
+		"dispatcher_id = ? AND status = 'waiting' AND created_at BETWEEN ? AND ?",
+		user.DispatcherID, fromTime, toTime,
+	).Count(&ticketStats.Escalated)
 
 	// Динамика по дням
 	var dailyStats []struct {
@@ -640,16 +658,55 @@ func (h *AdminHandler) GetAnalytics(c *gin.Context) {
 // ListAgents — список агентов диспетчерской
 func (h *AdminHandler) ListAgents(c *gin.Context) {
 	dispatcherID := h.getDispatcherID(c)
-	var agents []db.Agent
-	h.db.Where("dispatcher_id = ?", dispatcherID).Find(&agents)
-	c.JSON(200, gin.H{"agents": agents})
+	if dispatcherID == uuid.Nil {
+		return
+	}
+
+	// Получаем API-ключ
+	var dispatcher db.Dispatcher
+	if err := h.db.First(&dispatcher, "id = ?", dispatcherID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Dispatcher not found"})
+		return
+	}
+
+	// Запрашиваем агентов у оркестратора
+	orchURL := h.config.Orchestrator.URL + "/api/v1/agents"
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	req, _ := http.NewRequest("GET", orchURL, nil)
+	req.Header.Set("X-API-Key", dispatcher.OrchestratorAPIKey)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Orchestrator unreachable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+
+	c.JSON(resp.StatusCode, result)
 }
 
 // DeleteAgent — удаление агента
 func (h *AdminHandler) DeleteAgent(c *gin.Context) {
-	agentID, _ := uuid.Parse(c.Param("id"))
-	h.db.Delete(&db.Agent{}, "id = ?", agentID)
-	c.JSON(200, gin.H{"message": "Agent deleted"})
+	agentID := c.Param("id")
+
+	var dispatcher db.Dispatcher
+	h.db.First(&dispatcher, "is_active = true")
+
+	orchURL := fmt.Sprintf("%s/api/v1/agents/%s", h.config.Orchestrator.URL, agentID)
+	req, _ := http.NewRequest("DELETE", orchURL, nil)
+	req.Header.Set("X-API-Key", dispatcher.OrchestratorAPIKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Orchestrator unreachable"})
+		return
+	}
+	defer resp.Body.Close()
+	c.JSON(resp.StatusCode, gin.H{"message": "Agent deleted"})
 }
 
 // CreateAgent — регистрация нового агента (отправляет запрос в оркестратор)
@@ -716,7 +773,7 @@ func (h *AdminHandler) CreateAgent(c *gin.Context) {
 	agent.Skills = normalizeJSONB(agent.Skills)
 	agent.Metadata = normalizeJSONB(agent.Metadata)
 
-	agent.DispatcherID = dispatcherID
+	agent.DispatcherID = &dispatcherID
 	agent.ID = uuid.New()
 
 	if err := h.db.Create(&agent).Error; err != nil {
@@ -778,4 +835,44 @@ func normalizeJSONB(v interface{}) db.JSONB {
 		return db.JSONB{"raw": "[]"}
 	}
 	return db.JSONB{"raw": string(data)}
+}
+
+// В admin.go добавить:
+func (h *AdminHandler) AddKnowledge(c *gin.Context) {
+	dispatcherID := h.getDispatcherID(c)
+	if dispatcherID == uuid.Nil {
+		return
+	}
+
+	// Получаем API-ключ из БД
+	var dispatcher db.Dispatcher
+	if err := h.db.First(&dispatcher, "id = ?", dispatcherID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Dispatcher not found"})
+		return
+	}
+
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	body, _ := json.Marshal(req)
+	orchURL := h.config.Orchestrator.URL + "/api/v1/knowledge"
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	orchReq, _ := http.NewRequest("POST", orchURL, bytes.NewReader(body))
+	orchReq.Header.Set("Content-Type", "application/json")
+	orchReq.Header.Set("X-API-Key", dispatcher.OrchestratorAPIKey)
+
+	resp, err := httpClient.Do(orchReq)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Orchestrator unreachable: " + err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&result)
+	c.JSON(resp.StatusCode, result)
 }

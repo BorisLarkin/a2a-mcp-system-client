@@ -14,7 +14,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -33,6 +32,7 @@ import (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	// Загрузка конфигурации
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system environment variables")
@@ -107,7 +107,7 @@ func main() {
 	orchestratorClient := orchestrator.NewClient(
 		orchestratorURL,
 		orchestratorAPIKey,
-		30*time.Second,
+		60*time.Second,
 	)
 
 	// Проверка, нужен ли setup
@@ -136,6 +136,14 @@ func main() {
 	// Инициализация очереди тикетов
 	ticketQueue := queue.NewTicketQueue(gormDB, redisClient)
 
+	// Запуск сервиса автоэскалации (каждые 60 секунд, таймаут 5 минут)
+	escalationService := services.NewEscalationService(
+		gormDB,
+		60*time.Second, // проверка каждые 60 секунд
+		5*time.Minute,  // эскалация через 5 минут
+	)
+	go escalationService.Start()
+
 	// Инициализация роутера Gin
 	router := gin.Default()
 
@@ -157,15 +165,19 @@ func main() {
 
 	// Auth endpoints доступны всегда (и в setup, и в обычном режиме)
 	authHandler := v1.NewAuthHandler(authManager, gormDB)
+	apiKeyHandler := v1.NewApiKeyHandler(gormDB, cfg)
 	apiV1.POST("/auth/login", authHandler.Login)
 	apiV1.POST("/auth/refresh", authHandler.RefreshToken)
+	apiV1.GET("/public/bot-key", apiKeyHandler.GetBotKey)
 
 	if setupRequired {
 		// Режим setup: доступен только эндпоинт setup
 		setupHandler := v1.NewSetupHandler(gormDB, cfg)
 		apiV1.POST("/setup", setupHandler.Setup)
 		apiV1.GET("/setup/status", func(c *gin.Context) {
-			c.JSON(200, gin.H{"setup_required": true})
+			var count int64
+			gormDB.Model(&db.Dispatcher{}).Where("is_active = ?", true).Count(&count)
+			c.JSON(200, gin.H{"setup_required": count == 0})
 		})
 		// Все остальные запросы возвращают 503
 		router.NoRoute(func(c *gin.Context) {
@@ -194,21 +206,6 @@ func main() {
 			protected.POST("/queue/:id/assign", queueHandler.AssignTicket)
 			protected.POST("/queue/:id/unassign", queueHandler.UnassignTicket)
 
-			// WebSocket для реальных обновлений
-			protected.GET("/ws", func(c *gin.Context) {
-				userIDStr := c.GetString("user_id")
-
-				// Parse the user ID string to uuid.UUID
-				userID, err := uuid.Parse(userIDStr)
-				if err != nil {
-					c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID"})
-					return
-				}
-
-				// Cast gin.ResponseWriter to http.ResponseWriter (they're compatible)
-				wsManager.ServeWS(c.Writer, c.Request, userID, "")
-			})
-
 			// Админские эндпоинты
 			adminHandler := v1.NewAdminHandler(gormDB, cfg)
 			adminGroup := protected.Group("/admin")
@@ -226,6 +223,7 @@ func main() {
 				adminGroup.GET("/agents", adminHandler.ListAgents)
 				adminGroup.POST("/agents", adminHandler.CreateAgent)
 				adminGroup.DELETE("/agents/:id", adminHandler.DeleteAgent)
+				adminGroup.POST("/knowledge", adminHandler.AddKnowledge)
 			}
 
 			// Внешний вызов оркестратора
@@ -244,12 +242,30 @@ func main() {
 
 		// Публичный эндпоинт для создания тикетов из бота (без JWT)
 		publicGroup := apiV1.Group("/public")
-		publicGroup.Use(middleware.APIKeyAuth(os.Getenv("API_KEY")))
+		publicGroup.Use(middleware.APIKeyAuth(gormDB))
 		{
 			ticketHandler := v1.NewTicketHandler(gormDB, ticketQueue, wsManager, cfg, ticketProcessor, botClient)
 			publicGroup.POST("/tickets", ticketHandler.CreateTicket)
 			publicGroup.PUT("/tickets/:id/feedback", ticketHandler.UpdateFeedback)
+			publicGroup.GET("/my-tickets", ticketHandler.MyTickets)
 		}
+
+		// WebSocket для реальных обновлений (токен в query-параметре)
+		apiV1.GET("/ws", func(c *gin.Context) {
+			tokenStr := c.Query("token")
+			if tokenStr == "" {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "token required"})
+				return
+			}
+
+			claims, err := authManager.ValidateToken(tokenStr)
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+				return
+			}
+
+			wsManager.ServeWS(c.Writer, c.Request, claims.UserID, claims.Role)
+		})
 	}
 
 	// Статические файлы для веб-интерфейса

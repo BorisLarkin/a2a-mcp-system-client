@@ -3,7 +3,9 @@ package v1
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -48,6 +50,12 @@ func (h *SetupHandler) Setup(c *gin.Context) {
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Unknown action"})
 	}
+	// После успешного setup — перезапускаем сервер
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		log.Println("Setup complete, restarting server...")
+		os.Exit(0) // Docker перезапустит контейнер
+	}()
 }
 
 func (h *SetupHandler) handleRegister(c *gin.Context, req *SetupRequest) {
@@ -140,31 +148,45 @@ func (h *SetupHandler) handleConnect(c *gin.Context, req *SetupRequest) {
 		return
 	}
 
-	// Сохраняем локально
 	dispID, _ := uuid.Parse(req.DispatcherID)
-	dispatcher := db.Dispatcher{
-		ID:                       dispID,
-		OrchestratorAPIKey:       req.APIKey,
-		OrchestratorDispatcherID: &dispID,
-		Name:                     "Imported Dispatcher",
-		IsActive:                 true,
-	}
-	h.db.Create(&dispatcher)
 
-	// нужен хотя бы один пользователь для входа.
-	// Создаём временного admin с паролем "admin123"
-	//hashed, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
-	adminUser := db.User{
-		Username:     "admin",
-		PasswordHash: "admin123",
-		Role:         "admin",
-		DispatcherID: dispID,
-		IsActive:     true,
+	// Проверяем, существует ли уже диспетчерская
+	var existing db.Dispatcher
+	if err := h.db.Where("id = ?", dispID).First(&existing).Error; err == nil {
+		// Обновляем существующую
+		h.db.Model(&existing).Updates(map[string]interface{}{
+			"orchestrator_api_key": req.APIKey,
+			"is_active":            true,
+		})
+	} else {
+		// Создаём новую
+		dispatcher := db.Dispatcher{
+			ID:                       dispID,
+			OrchestratorAPIKey:       req.APIKey,
+			OrchestratorDispatcherID: &dispID,
+			Name:                     "Imported Dispatcher",
+			IsActive:                 true,
+		}
+		h.db.Create(&dispatcher)
 	}
-	h.db.Create(&adminUser)
+
+	// Создаём админа, если нет пользователей
+	var userCount int64
+	h.db.Model(&db.User{}).Count(&userCount)
+	if userCount == 0 {
+		adminUser := db.User{
+			Username:     "admin",
+			PasswordHash: "admin123",
+			Role:         "admin",
+			DispatcherID: dispID,
+			IsActive:     true,
+		}
+		h.db.Create(&adminUser)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":        "Connected successfully",
+		"admin_username": "admin",
 		"admin_password": "admin123",
 	})
 }

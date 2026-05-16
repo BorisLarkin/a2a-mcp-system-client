@@ -394,6 +394,20 @@ func (h *TicketHandler) UpdateFeedback(c *gin.Context) {
 		return
 	}
 
+	// Если эскалация — добавляем в очередь
+	if req.Status == "waiting" {
+		var ticket db.Ticket
+		if err := h.db.First(&ticket, "id = ?", ticketID).Error; err == nil {
+			h.queue.AddTicket(c.Request.Context(), ticketID, ticket.DispatcherID)
+		}
+	}
+
+	// Отправляем WebSocket-уведомление
+	h.wsManager.Broadcast("ticket_updated", gin.H{
+		"ticket_id": ticketID.String(),
+		"status":    req.Status,
+	})
+
 	c.JSON(http.StatusOK, gin.H{"message": "Feedback updated"})
 }
 
@@ -539,4 +553,43 @@ func (h *TicketHandler) GetMessages(c *gin.Context) {
 		"page":     pageInt,
 		"limit":    limitInt,
 	})
+}
+
+func (h *TicketHandler) MyTickets(c *gin.Context) {
+	externalID := c.Query("client_external_id")
+	if externalID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "client_external_id required"})
+		return
+	}
+
+	var client db.Client
+	if err := h.db.Where("external_id = ?", externalID).First(&client).Error; err != nil {
+		c.JSON(http.StatusOK, gin.H{"tickets": []interface{}{}})
+		return
+	}
+
+	var tickets []db.Ticket
+	h.db.Where("client_id = ?", client.ID).
+		Order("created_at DESC").
+		Limit(20).
+		Find(&tickets)
+
+	// Возвращаем только базовую информацию
+	type TicketInfo struct {
+		ID           string    `json:"id"`
+		OriginalText string    `json:"original_text"`
+		Status       string    `json:"status"`
+		CreatedAt    time.Time `json:"created_at"`
+	}
+	result := make([]TicketInfo, len(tickets))
+	for i, t := range tickets {
+		result[i] = TicketInfo{
+			ID:           t.ID.String(),
+			OriginalText: t.OriginalText,
+			Status:       t.Status,
+			CreatedAt:    t.CreatedAt,
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"tickets": result})
 }

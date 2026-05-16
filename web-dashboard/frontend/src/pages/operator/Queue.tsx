@@ -1,6 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '@/api/client';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 const STATUS_LABELS: Record<string, string> = {
   new: 'Новый',
@@ -23,6 +24,13 @@ const STATUS_COLORS: Record<string, string> = {
 export default function Queue() {
   const [searchParams] = useSearchParams();
   const statusFilter = searchParams.get('status') || 'new,waiting,in_progress,waiting_for_feedback';
+  const queryClient = useQueryClient();
+    
+  useWebSocket((data) => {
+      if (data.type === 'ticket_created' || data.type === 'ticket_updated' || data.type === 'new_escalated') {
+          queryClient.invalidateQueries({ queryKey: ['tickets', 'active'] });
+      }
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ['tickets', 'active', statusFilter],

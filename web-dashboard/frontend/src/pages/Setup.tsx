@@ -39,7 +39,7 @@ export default function Setup() {
               <p><strong>Логин:</strong> {result.admin_username}</p>
               <p><strong>Пароль:</strong> {result.admin_password}</p>
               <p><strong>API Key:</strong> {result.api_key}</p>
-              <p className="text-red-500 text-sm mt-2">Сохраните эти данные! Они не будут показаны снова. После этого перезапустите приложение.</p>
+              <p className="text-red-500 text-sm mt-2">Сохраните эти данные! Они не будут показаны снова. Приложение перезапускается с новыми данными.</p>
             </div>
           )}
           <button onClick={() => navigate('/login')} className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700">

@@ -155,15 +155,15 @@ type OrchestratorLog struct {
 }
 
 type Agent struct {
-	ID            uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	DispatcherID  uuid.UUID `gorm:"type:uuid;not null"`
-	Name          string    `gorm:"size:255;not null"`
-	Endpoint      string    `gorm:"size:512;not null"`
-	AgentType     string    `gorm:"size:100;not null"`
-	Capabilities  JSONB     `gorm:"type:jsonb;default:'[]'::jsonb"`
-	Skills        JSONB     `gorm:"type:jsonb;default:'[]'::jsonb"`
-	Status        string    `gorm:"size:50;default:'pending'"`
-	AuthToken     *string   `gorm:"size:512"`
+	ID            uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	DispatcherID  *uuid.UUID `gorm:"type:uuid;"`
+	Name          string     `gorm:"size:255;not null"`
+	Endpoint      string     `gorm:"size:512;not null"`
+	AgentType     string     `gorm:"size:100;not null"`
+	Capabilities  JSONB      `gorm:"type:jsonb;default:'[]'::jsonb"`
+	Skills        JSONB      `gorm:"type:jsonb;default:'[]'::jsonb"`
+	Status        string     `gorm:"size:50;default:'pending'"`
+	AuthToken     *string    `gorm:"size:512"`
 	LastHeartbeat *time.Time
 	Metadata      JSONB `gorm:"type:jsonb;default:'{}'::jsonb"`
 	CreatedAt     time.Time

@@ -87,7 +87,12 @@ func (tp *TicketProcessor) ProcessTicket(ticketID uuid.UUID) {
 	ticket.Category = extractCategory(resp.Classification)
 	tp.db.Save(&ticket)
 
+	var aiSettings db.AISettings
 	threshold := 0.7
+	if err := tp.db.Where("dispatcher_id = ?", ticket.DispatcherID).First(&aiSettings).Error; err == nil {
+		threshold = aiSettings.ConfidenceThreshold
+	}
+	log.Printf("DEBUG: threshold=%.2f, confidence=%.2f", threshold, confidence)
 	if confidence < threshold {
 		// Эскалация
 		ticket.Status = "waiting"
@@ -109,31 +114,52 @@ func (tp *TicketProcessor) ProcessTicket(ticketID uuid.UUID) {
 		ticket.Status = "waiting_for_feedback"
 		tp.db.Save(&ticket)
 
-		// Отправляем ответ клиенту через бота
+		fmt.Println("DEBUG: finalResponse='%s', confidence=%.2f", finalResponse, confidence)
+		fmt.Println("DEBUG: ticket.ClientID=%v, botClient=%v", ticket.ClientID, tp.botClient)
+
 		if ticket.ClientID != nil {
 			var client db.Client
 			if err := tp.db.First(&client, "id = ?", *ticket.ClientID).Error; err == nil {
 				chatID := parseChatID(client.ExternalID)
-				if chatID != 0 {
-					// Сохраняем AI-сообщение
-					aiMsg := db.TicketMessage{
-						TicketID:    ticket.ID,
-						SenderType:  "ai",
-						MessageText: finalResponse,
+				log.Printf("DEBUG: client found, chatID=%d, externalID=%s", chatID, client.ExternalID)
+				if chatID != 0 && tp.botClient != nil {
+					err := tp.botClient.SendMessage(chatID, finalResponse, ticket.ID.String())
+					if err != nil {
+						fmt.Println("ERROR: Failed to send AI response: %v", err)
+					} else {
+						fmt.Println("SUCCESS: AI response sent to chat_id=%d", chatID)
 					}
-					tp.db.Create(&aiMsg)
-
-					// Отправляем через бот-клиент (будет добавлен позже)
-					if tp.botClient != nil {
-						err := tp.botClient.SendMessage(chatID, finalResponse, ticket.ID.String())
-						if err != nil {
-							log.Printf("Failed to send AI response to client: %v", err)
-						}
-					}
+				} else {
+					fmt.Println("WARNING: chatID=%d, botClient=%v", chatID, tp.botClient)
 				}
+			} else {
+				fmt.Println("ERROR: Client not found for id=%v", ticket.ClientID)
 			}
+		} else {
+			fmt.Println("WARNING: ticket.ClientID is nil, cannot send response")
 		}
+
+		// После автоответа
+		tp.wsManager.Broadcast("ticket_updated", map[string]interface{}{
+			"ticket_id": ticket.ID.String(),
+			"status":    "waiting_for_feedback",
+		})
 	}
+	// Логируем в БД для отладки
+	debugLog := db.OrchestratorLog{
+		DispatcherID: ticket.DispatcherID,
+		TicketID:     &ticketID,
+		RequestType:  "debug_processor",
+		RequestData: db.JSONB{
+			"finalResponse": finalResponse,
+			"confidence":    confidence,
+			"clientID":      fmt.Sprintf("%v", ticket.ClientID),
+			"botClientNil":  tp.botClient == nil,
+			"status":        ticket.Status,
+		},
+		StatusCode: 200,
+	}
+	tp.db.Create(&debugLog)
 }
 
 func truncate(s string, maxLen int) string {
@@ -182,6 +208,9 @@ func extractFinalResponse(classification map[string]interface{}) string {
 		return ""
 	}
 	if resp, ok := classification["generated_response"].(string); ok && resp != "" {
+		return resp
+	}
+	if resp, ok := classification["response"].(string); ok && resp != "" {
 		return resp
 	}
 	return ""

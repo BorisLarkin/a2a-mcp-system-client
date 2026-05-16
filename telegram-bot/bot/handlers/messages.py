@@ -44,7 +44,41 @@ async def create_ticket_prompt(message: Message, state: FSMContext):
 
 @router.message(F.text == "📊 Мои обращения")
 async def my_tickets(message: Message):
-    await message.answer("🔍 История обращений будет доступна в ближайшее время.")
+    chat_id = str(message.chat.id)
+    
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{cfg.local_api_url}/api/v1/public/my-tickets",
+                params={"client_external_id": chat_id},
+                headers={"X-API-Key": cfg.api_key}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                tickets = data.get("tickets", [])
+                
+                if not tickets:
+                    await message.answer("У вас пока нет обращений.")
+                    return
+                
+                text = "<b>Ваши обращения:</b>\n\n"
+                for t in tickets[:10]:
+                    status_map = {
+                        "new": "🆕 Новое", "in_progress": "🔄 В работе",
+                        "waiting": "⏳ Ожидает оператора", "waiting_for_feedback": "✅ Ждёт ответа",
+                        "resolved": "✅ Решено", "closed": "🔒 Закрыто"
+                    }
+                    status_text = status_map.get(t.get("status", ""), "📝")
+                    ticket_id = t.get("id", "")[:8]
+                    original = (t.get("original_text", "") or "")[:50]
+                    text += f"{status_text} <code>#{ticket_id}</code> — {original}\n"
+                
+                await message.answer(text)
+            else:
+                await message.answer("Не удалось загрузить обращения.")
+    except Exception as e:
+        logger.error(f"Failed to get tickets: {e}")
+        await message.answer("Сервис временно недоступен.")
 
 
 @router.message(TicketStates.waiting_for_description)

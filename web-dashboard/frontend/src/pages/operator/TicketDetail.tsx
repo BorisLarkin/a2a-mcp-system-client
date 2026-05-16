@@ -1,7 +1,8 @@
 import { useParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '@/api/client';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 const STATUS_LABELS: Record<string, string> = {
   new: 'Новый',
@@ -15,17 +16,32 @@ const STATUS_LABELS: Record<string, string> = {
 export default function TicketDetail() {
   const { id } = useParams();
   const [reply, setReply] = useState('');
+  const queryClient = useQueryClient();
+
+  // ВСЕ ХУКИ ДО УСЛОВНОГО ВОЗВРАТА
+  useWebSocket((data) => {
+    console.log('WS message:', data.type, data.data);
+    if (data.type === 'ticket_updated' && data.data?.ticket_id === id) {
+        console.log('Invalidating ticket query');
+        queryClient.invalidateQueries({ queryKey: ['ticket', id] });
+    }
+    if (data.type === 'message_added' && data.data?.ticket_id === id) {
+        queryClient.invalidateQueries({ queryKey: ['ticket', id] });
+    }
+  });
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['ticket', id],
     queryFn: () => api(`/tickets/${id}`),
   });
 
+  // Условный возврат ТОЛЬКО после всех хуков
   if (isLoading) return <p className="p-6">Загрузка...</p>;
 
   const ticket = data?.ticket;
   const messages = data?.messages || [];
   const ai = ticket?.AIAnalysis;
+  const isClosed = ticket?.Status === 'resolved' || ticket?.Status === 'closed';
 
   const sendReply = async () => {
     if (!reply.trim()) return;
@@ -35,6 +51,32 @@ export default function TicketDetail() {
     });
     setReply('');
     refetch();
+  };
+
+  const addToKnowledge = async () => {
+    // Собираем все сообщения оператора
+    const operatorMessages = messages
+      .filter((m: any) => m.SenderType === 'operator')
+      .map((m: any) => m.MessageText)
+      .join('\n\n');
+
+    const content = operatorMessages || ticket?.AIResponse || ticket?.OriginalText;
+    if (!content) return;
+
+    try {
+      await api('/admin/knowledge', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: ticket?.Subject || ticket?.OriginalText?.slice(0, 100) || 'Без названия',
+          content: content,
+          category: ticket?.Category || 'общее',
+          ticket_id: ticket?.ID,
+        }),
+      });
+      alert('✅ Документ добавлен в базу знаний');
+    } catch (e) {
+      alert('❌ Ошибка при добавлении документа');
+    }
   };
 
   return (
@@ -72,7 +114,7 @@ export default function TicketDetail() {
           </div>
         </div>
 
-        {ticket?.Status !== 'resolved' && ticket?.Status !== 'closed' && (
+        {!isClosed && (
           <div className="flex gap-2">
             <input
               type="text" value={reply} onChange={e => setReply(e.target.value)}
@@ -84,6 +126,14 @@ export default function TicketDetail() {
               Отправить
             </button>
           </div>
+        )}
+        {isClosed && (
+          <p className="text-gray-500 text-sm mt-4">Тикет закрыт. Ответы больше не принимаются.</p>
+        )}
+        {(ticket?.Status === 'resolved' || ticket?.Status === 'closed') && (
+          <button onClick={addToKnowledge} className="mt-2 bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700">
+            📚 В базу знаний
+          </button>
         )}
       </div>
 

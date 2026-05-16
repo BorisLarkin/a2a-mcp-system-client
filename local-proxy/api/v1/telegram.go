@@ -337,7 +337,11 @@ func (h *TelegramHandler) maybeSendAutoResponse(ctx context.Context, ticket *db.
 	       // Сохраняем AI ответ в тикет
 	       ticket.AIResponse = response.Text
 	       ticket.AIProcessedAt = time.Now()
-	       h.db.WithContext(ctx).Save(ticket)
+	       h.db.WithContext(ctx).S
+	}
+}
+
+funcave(ticket)
 	   }
 	*/
 }

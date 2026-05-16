@@ -15,6 +15,17 @@ class Config:
     maintenance_mode: bool = False
     debug: bool = False
 
+async def fetch_api_key(local_api_url: str) -> tuple[str, str]:
+    """Получает API-ключ и dispatcher_id из local-proxy"""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.get(
+            f"{local_api_url}/api/v1/public/bot-key",
+            headers={"X-Setup-Secret": "internal_setup_secret_123"}
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("api_key", ""), data.get("dispatcher_id", "")
+    return "", ""
 
 # Синглтон конфига (для обратной совместимости со старыми handlers)
 config: Optional[Config] = None

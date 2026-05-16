@@ -1,6 +1,8 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api } from '@/api/client';
+import { useState } from 'react';
+import { useWebSocket } from '@/hooks/useWebSocket';
 
 interface Stats {
   waiting: number;
@@ -10,6 +12,16 @@ interface Stats {
 }
 
 export default function OperatorDashboard() {
+  const queryClient = useQueryClient();
+    
+  useWebSocket((data) => {
+      if (data.type === 'ticket_created' || data.type === 'ticket_updated' || data.type === 'new_escalated') {
+          // Обновляем список тикетов
+          queryClient.invalidateQueries({ queryKey: ['tickets'] });
+          queryClient.invalidateQueries({ queryKey: ['queue'] });
+      }
+  });
+
   const { data: allTickets } = useQuery({
     queryKey: ['tickets', 'all'],
     queryFn: () => api('/tickets?limit=100'),
