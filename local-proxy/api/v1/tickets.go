@@ -40,12 +40,13 @@ func NewTicketHandler(db *gorm.DB, queue *queue.TicketQueue, wsManager *websocke
 }
 
 type CreateTicketRequest struct {
-	Text      string                 `json:"text" binding:"required"`
-	Subject   string                 `json:"subject"`
-	ClientID  *uuid.UUID             `json:"client_id"`
-	ChannelID *uuid.UUID             `json:"channel_id"`
-	Priority  string                 `json:"priority"`
-	Metadata  map[string]interface{} `json:"metadata"`
+	Text             string                 `json:"text" binding:"required"`
+	Subject          string                 `json:"subject"`
+	ClientID         *uuid.UUID             `json:"client_id"`
+	ChannelID        *uuid.UUID             `json:"channel_id"`
+	ClientExternalID string                 `json:"client_external_id"`
+	Priority         string                 `json:"priority"`
+	Metadata         map[string]interface{} `json:"metadata"`
 }
 
 func (h *TicketHandler) CreateTicket(c *gin.Context) {
@@ -64,6 +65,20 @@ func (h *TicketHandler) CreateTicket(c *gin.Context) {
 	var dispatcherID uuid.UUID
 	var clientID *uuid.UUID
 	var channelID *uuid.UUID
+
+	// Для публичного доступа — создаём клиента по client_external_id
+	if req.ClientExternalID != "" {
+		var client db.Client
+		if err := h.db.Where("external_id = ?", req.ClientExternalID).First(&client).Error; err != nil {
+			client = db.Client{
+				ExternalID:  req.ClientExternalID,
+				Name:        "Web Widget User",
+				ContactInfo: req.ClientExternalID,
+			}
+			h.db.Create(&client)
+		}
+		clientID = &client.ID
+	}
 
 	// --- Определяем диспетчерскую ---
 	if userID != uuid.Nil {
@@ -592,4 +607,33 @@ func (h *TicketHandler) MyTickets(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"tickets": result})
+}
+
+// GetPublicTicket — получение тикета по API-ключу (для виджета)
+func (h *TicketHandler) GetPublicTicket(c *gin.Context) {
+	ticketID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ticket ID"})
+		return
+	}
+
+	var ticket db.Ticket
+	if err := h.db.Preload("Client").First(&ticket, "id = ?", ticketID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Ticket not found"})
+		return
+	}
+
+	var messages []db.TicketMessage
+	h.db.Where("ticket_id = ?", ticketID).Order("created_at ASC").Find(&messages)
+
+	var aiAnalysis map[string]interface{}
+	if ticket.AIAnalysis != nil {
+		aiAnalysis = map[string]interface{}(ticket.AIAnalysis)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"ticket":      ticket,
+		"messages":    messages,
+		"ai_analysis": aiAnalysis,
+	})
 }

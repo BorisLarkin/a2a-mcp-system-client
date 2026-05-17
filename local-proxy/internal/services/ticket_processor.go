@@ -114,32 +114,30 @@ func (tp *TicketProcessor) ProcessTicket(ticketID uuid.UUID) {
 		ticket.Status = "waiting_for_feedback"
 		tp.db.Save(&ticket)
 
-		fmt.Println("DEBUG: finalResponse='%s', confidence=%.2f", finalResponse, confidence)
-		fmt.Println("DEBUG: ticket.ClientID=%v, botClient=%v", ticket.ClientID, tp.botClient)
+		// ВСЕГДА сохраняем AI-сообщение в ticket_messages
+		aiMsg := db.TicketMessage{
+			TicketID:    ticket.ID,
+			SenderType:  "ai",
+			MessageText: finalResponse,
+		}
+		if err := tp.db.Create(&aiMsg).Error; err != nil {
+			log.Printf("ERROR: Failed to save AI message: %v", err)
+		} else {
+			log.Printf("DEBUG: AI message saved to ticket_messages, id=%s", aiMsg.ID)
+		}
 
-		if ticket.ClientID != nil {
+		// Отправляем через бота только для Telegram-клиентов
+		if ticket.ClientID != nil && tp.botClient != nil {
 			var client db.Client
 			if err := tp.db.First(&client, "id = ?", *ticket.ClientID).Error; err == nil {
 				chatID := parseChatID(client.ExternalID)
-				log.Printf("DEBUG: client found, chatID=%d, externalID=%s", chatID, client.ExternalID)
-				if chatID != 0 && tp.botClient != nil {
-					err := tp.botClient.SendMessage(chatID, finalResponse, ticket.ID.String())
-					if err != nil {
-						fmt.Println("ERROR: Failed to send AI response: %v", err)
-					} else {
-						fmt.Println("SUCCESS: AI response sent to chat_id=%d", chatID)
-					}
-				} else {
-					fmt.Println("WARNING: chatID=%d, botClient=%v", chatID, tp.botClient)
+				if chatID != 0 {
+					tp.botClient.SendMessage(chatID, finalResponse, ticket.ID.String())
 				}
-			} else {
-				fmt.Println("ERROR: Client not found for id=%v", ticket.ClientID)
 			}
-		} else {
-			fmt.Println("WARNING: ticket.ClientID is nil, cannot send response")
 		}
 
-		// После автоответа
+		// Уведомление операторам
 		tp.wsManager.Broadcast("ticket_updated", map[string]interface{}{
 			"ticket_id": ticket.ID.String(),
 			"status":    "waiting_for_feedback",

@@ -248,6 +248,7 @@ func main() {
 			publicGroup.POST("/tickets", ticketHandler.CreateTicket)
 			publicGroup.PUT("/tickets/:id/feedback", ticketHandler.UpdateFeedback)
 			publicGroup.GET("/my-tickets", ticketHandler.MyTickets)
+			publicGroup.GET("/tickets/:id", ticketHandler.GetPublicTicket)
 		}
 
 		// WebSocket для реальных обновлений (токен в query-параметре)
@@ -269,7 +270,7 @@ func main() {
 	}
 
 	// Статические файлы для веб-интерфейса
-	router.Static("/static", "./web-dashboard/build/static")
+	router.Static("/static", "./web-dashboard/frontend/public")
 	router.StaticFile("/", "./web-dashboard/build/index.html")
 	router.StaticFile("/favicon.ico", "./web-dashboard/build/favicon.ico")
 	router.NoRoute(func(c *gin.Context) {

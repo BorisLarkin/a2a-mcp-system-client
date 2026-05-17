@@ -2,11 +2,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { api } from '@/api/client';
 
-function safeParseJSON(raw: string | undefined, fallback: any = []): any {
-  if (!raw || raw === 'null') return fallback;
-  try { return JSON.parse(raw); } catch { return fallback; }
-}
-
 export default function Agents() {
   const queryClient = useQueryClient();
   const [showAdd, setShowAdd] = useState(false);
@@ -35,9 +30,20 @@ export default function Agents() {
   });
 
   const allAgents = data?.agents || [];
-  const ownAgents = data?.own || [];
-  const commonAgents = data?.common || [];
+  
+  // Фильтруем на фронтенде: общие = DispatcherID === null, свои = DispatcherID !== null
+  const commonAgents = allAgents.filter((a: any) => a.DispatcherID === null);
+  const ownAgents = allAgents.filter((a: any) => a.DispatcherID !== null);
+  
   const displayed = tab === 'own' ? ownAgents : tab === 'common' ? commonAgents : allAgents;
+
+  // Извлечение навыков из Metadata (там они с input/output schema)
+  const getSkillsFromMetadata = (agent: any) => {
+    if (agent.Metadata?.skills && Array.isArray(agent.Metadata.skills)) {
+      return agent.Metadata.skills;
+    }
+    return [];
+  };
 
   const renderTable = (agents: any[]) => (
     <table className="w-full">
@@ -53,20 +59,25 @@ export default function Agents() {
       </thead>
       <tbody>
         {agents.map((agent: any) => {
-          const skills = safeParseJSON(agent.Skills?.raw, []);
+          // Skills приходят как массив объектов [{id, description}]
+          const skills = Array.isArray(agent.Skills) ? agent.Skills : [];
+          const metadataSkills = getSkillsFromMetadata(agent);
+          // Используем metadataSkills если есть, иначе обычные Skills
+          const displaySkills = metadataSkills.length > 0 ? metadataSkills : skills;
+          
           return (
             <tr key={agent.ID} className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => setSelectedAgent(agent)}>
               <td className="p-3 text-sm font-medium">{agent.Name}</td>
               <td className="p-3 text-sm">{agent.AgentType}</td>
               <td className="p-3 text-sm font-mono">{agent.Endpoint}</td>
-              <td className="p-3 text-sm">{Array.isArray(skills) ? skills.length : 0}</td>
+              <td className="p-3 text-sm">{displaySkills.length}</td>
               <td className="p-3 text-sm">
                 <span className={`px-2 py-1 rounded text-xs ${agent.Status === 'online' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                   {agent.Status}
                 </span>
               </td>
               <td className="p-3">
-                {agent.DispatcherID !== null && agent.DispatcherID !== '00000000-0000-0000-0000-000000000000' && (
+                {agent.DispatcherID !== null && (
                   <button
                     onClick={(e) => { e.stopPropagation(); if (confirm('Удалить агента?')) deleteMutation.mutate(agent.ID); }}
                     className="text-red-500 hover:underline text-sm"
@@ -110,14 +121,18 @@ export default function Agents() {
       )}
 
       <div className="flex gap-2 mb-4">
-        {[{ key: 'all', label: `Все (${allAgents.length})` },
-          { key: 'own', label: `Мои (${ownAgents.length})` },
-          { key: 'common', label: `Общие (${commonAgents.length})` }].map(t => (
-          <button key={t.key} onClick={() => setTab(t.key as any)}
-            className={`px-4 py-1 rounded text-sm ${tab === t.key ? 'bg-blue-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}>
-            {t.label}
-          </button>
-        ))}
+        <button onClick={() => setTab('all')}
+          className={`px-4 py-1 rounded text-sm ${tab === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}>
+          Все ({allAgents.length})
+        </button>
+        <button onClick={() => setTab('own')}
+          className={`px-4 py-1 rounded text-sm ${tab === 'own' ? 'bg-blue-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}>
+          Мои ({ownAgents.length})
+        </button>
+        <button onClick={() => setTab('common')}
+          className={`px-4 py-1 rounded text-sm ${tab === 'common' ? 'bg-blue-600 text-white' : 'bg-gray-200 hover:bg-gray-300'}`}>
+          Общие ({commonAgents.length})
+        </button>
       </div>
 
       {isLoading ? <p className="p-6">Загрузка...</p> :
@@ -132,10 +147,10 @@ export default function Agents() {
             <div className="space-y-3 text-sm">
               <p><strong>Тип:</strong> {selectedAgent.AgentType}</p>
               <p><strong>Endpoint:</strong> <code>{selectedAgent.Endpoint}</code></p>
-              <p><strong>Capabilities:</strong> {safeParseJSON(selectedAgent.Capabilities?.raw, []).join(', ') || '—'}</p>
+              <p><strong>Capabilities:</strong> {Array.isArray(selectedAgent.Capabilities) ? selectedAgent.Capabilities.join(', ') : '—'}</p>
               <div>
                 <strong>Навыки:</strong>
-                {safeParseJSON(selectedAgent.Skills?.raw, []).map((skill: any, i: number) => (
+                {(getSkillsFromMetadata(selectedAgent).length > 0 ? getSkillsFromMetadata(selectedAgent) : (Array.isArray(selectedAgent.Skills) ? selectedAgent.Skills : [])).map((skill: any, i: number) => (
                   <div key={i} className="bg-gray-50 p-3 rounded mt-2">
                     <p className="font-medium">{skill.id}</p>
                     <p className="text-gray-500 text-xs">{skill.description}</p>
