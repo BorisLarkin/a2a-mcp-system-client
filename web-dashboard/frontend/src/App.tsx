@@ -9,6 +9,8 @@ import TicketDetail from '@/pages/operator/TicketDetail';
 import AdminDashboard from '@/pages/admin/Dashboard';
 import Settings from '@/pages/admin/Settings';
 import Agents from '@/pages/admin/Agents';
+import Users from '@/pages/admin/Users';
+import Knowledge from '@/pages/admin/Knowledge';
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
   const { user, isAuthenticated, isLoading, setupRequired } = useAuth();
@@ -62,6 +64,8 @@ export default function App() {
             <Route path="admin/dashboard" element={<ProtectedRoute roles={['admin']}><AdminDashboard /></ProtectedRoute>} />
             <Route path="admin/settings" element={<ProtectedRoute roles={['admin']}><Settings /></ProtectedRoute>} />
             <Route path="admin/agents" element={<ProtectedRoute roles={['admin']}><Agents /></ProtectedRoute>} />
+            <Route path="admin/users" element={<ProtectedRoute roles={['admin']}><Users /></ProtectedRoute>} />
+            <Route path="admin/knowledge" element={<ProtectedRoute roles={['admin']}><Knowledge /></ProtectedRoute>} />
           </Route>
         </Routes>
       </AuthProvider>

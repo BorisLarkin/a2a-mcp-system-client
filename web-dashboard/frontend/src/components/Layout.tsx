@@ -22,6 +22,8 @@ export default function Layout() {
             <Link to="/admin/dashboard" className="hover:text-blue-600">Метрики</Link>
             <Link to="/admin/settings" className="hover:text-blue-600">Настройки</Link>
             <Link to="/admin/agents" className="hover:text-blue-600">Агенты</Link>
+            <Link to="/admin/users" className="hover:text-blue-600">Пользователи</Link>
+            <Link to="/admin/knowledge" className="hover:text-blue-600">База знаний</Link>
           </>
         )}
         <div className="mt-auto">

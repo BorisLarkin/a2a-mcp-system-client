@@ -253,7 +253,7 @@ func (h *AdminHandler) ListUsers(c *gin.Context) {
 // CreateUserRequest - создание пользователя
 type CreateUserRequest struct {
 	Username string `json:"username" binding:"required,min=3,max=100"`
-	Email    string `json:"email" binding:"required,email"`
+	Email    string `json:"email"`
 	FullName string `json:"full_name" binding:"required"`
 	Role     string `json:"role" binding:"required,oneof=admin operator viewer"`
 	Password string `json:"password" binding:"required,min=8"`
@@ -261,59 +261,38 @@ type CreateUserRequest struct {
 
 // CreateUser - создание нового пользователя
 func (h *AdminHandler) CreateUser(c *gin.Context) {
-	userID, _ := GetUserIDFromContext(c)
-
 	var req CreateUserRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
 
-	var currentUser db.User
-	if err := h.db.Where("id = ?", userID).First(&currentUser).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+	dispatcherID := h.getDispatcherID(c)
+	if dispatcherID == uuid.Nil {
 		return
 	}
 
-	// Проверяем, что username уникален
-	var existingUser db.User
-	if err := h.db.Where("username = ?", req.Username).First(&existingUser).Error; err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Username already exists"})
-		return
+	// Email по умолчанию
+	if req.Email == "" {
+		req.Email = req.Username + "@corp.ru"
 	}
 
-	// Хешируем пароль
-	passwordHash, err := utils.HashPassword(req.Password)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
-		return
-	}
-
-	// Создаем пользователя
 	user := db.User{
-		DispatcherID: currentUser.DispatcherID,
 		Username:     req.Username,
+		PasswordHash: req.Password, // пароль открытый
 		Email:        req.Email,
 		FullName:     req.FullName,
 		Role:         req.Role,
-		PasswordHash: passwordHash,
+		DispatcherID: dispatcherID,
 		IsActive:     true,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
 	}
 
 	if err := h.db.Create(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user: " + err.Error()})
 		return
 	}
 
-	// Очищаем пароль из ответа
-	user.PasswordHash = ""
-
-	c.JSON(http.StatusCreated, gin.H{
-		"message": "User created successfully",
-		"user":    user,
-	})
+	c.JSON(http.StatusCreated, gin.H{"user": user})
 }
 
 // UpdateUserRequest - обновление пользователя
