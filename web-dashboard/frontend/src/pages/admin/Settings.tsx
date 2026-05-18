@@ -48,61 +48,69 @@ export default function Settings() {
   if (isLoading) return <p className="p-6">Загрузка...</p>;
 
   return (
-    <div className="max-w-2xl">
-      <h1 className="text-2xl font-bold mb-6">Настройки системы</h1>
+    <div className="max-w-3xl mx-auto bg-white border border-slate-200/80 rounded-xl shadow-sm p-6">
+      <div className="border-b border-slate-100 pb-4 mb-6">
+        <h1 className="text-xl font-bold text-slate-900">Настройки оркестратора и LLM</h1>
+        <p className="text-sm text-slate-500 mt-1">Глобальные параметры автоматизации Saiga 8B и диспетчерской прокси</p>
+      </div>
 
-      <div className="bg-white rounded-lg shadow p-6 space-y-5">
-        <div className="flex items-center justify-between">
-          <label className="font-medium">AI-обработка</label>
-          <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} className="w-5 h-5" />
-        </div>
-
-        <div className="flex items-center justify-between">
-          <label className="font-medium">Автоответ</label>
-          <input type="checkbox" checked={autoRespond} onChange={e => setAutoRespond(e.target.checked)} className="w-5 h-5" />
-        </div>
-
-        <div>
-          <label className="font-medium block mb-1">Порог уверенности: {confidenceThreshold}</label>
-          <input
-            type="range" min="0.5" max="0.99" step="0.01"
-            value={confidenceThreshold} onChange={e => setConfidenceThreshold(parseFloat(e.target.value))}
-            className="w-full"
+      <div className="space-y-6">
+        {/* Ползунок Порога уверенности */}
+        <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+          <div className="flex justify-between items-center mb-2">
+            <label className="font-semibold text-sm text-slate-800">Порог уверенности классификации</label>
+            <span className="bg-blue-600 text-white font-mono text-xs px-2 py-0.5 rounded-md font-bold">
+              {confidenceThreshold}
+            </span>
+          </div>
+          <input 
+            type="range" min="0.5" max="0.99" step="0.01" 
+            value={confidenceThreshold} 
+            onChange={e => setConfidenceThreshold(parseFloat(e.target.value))}
+            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
           />
-          <div className="flex justify-between text-xs text-gray-400">
-            <span>0.5 (чаще эскалация)</span>
-            <span>0.99 (чаще автоответ)</span>
+          <div className="flex justify-between text-[11px] text-slate-400 mt-1 font-medium">
+            <span>0.5 (Агрессивный автоответ)</span>
+            <span>0.99 (Частая эскалация человеку)</span>
           </div>
         </div>
 
-        <div>
-          <label className="font-medium block mb-1">Стиль общения</label>
-          <select value={communicationStyle} onChange={e => setCommunicationStyle(e.target.value)} className="border p-2 rounded w-full">
-            <option value="friendly">Дружелюбный</option>
-            <option value="professional">Профессиональный</option>
+        {/* Селектор стиля */}
+        <div className="flex flex-col gap-1.5">
+          <label className="font-semibold text-sm text-slate-800">Стиль ответов генератора</label>
+          <select 
+            value={communicationStyle} 
+            onChange={e => setCommunicationStyle(e.target.value)}
+            className="w-full"
+          >
+            <option value="friendly">Дружелюбный (Паблик / Поддержка)</option>
+            <option value="professional">Профессиональный (B2B Диспетчерская)</option>
             <option value="balanced">Сбалансированный</option>
           </select>
         </div>
 
-        <div>
-          <label className="font-medium block mb-1">Контекст компании</label>
+        {/* Системный контекст */}
+        <div className="flex flex-col gap-1.5">
+          <label className="font-semibold text-sm text-slate-800">Контекст компании (RAG System Prompt)</label>
           <textarea
-            value={companyContext} onChange={e => setCompanyContext(e.target.value)}
-            placeholder="Описание компании для AI..."
-            className="border p-2 rounded w-full h-24"
+            value={companyContext} 
+            onChange={e => setCompanyContext(e.target.value)}
+            placeholder="Укажите специфику работы диспетчерской, критические инструкции..."
+            className="w-full h-32 resize-none"
           />
         </div>
 
-        <button
-          onClick={handleSave}
-          disabled={mutation.isPending}
-          className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
-        >
-          {mutation.isPending ? 'Сохранение...' : 'Сохранить настройки'}
-        </button>
-
-        {saved && <p className="text-green-600 text-sm">✅ Настройки сохранены</p>}
-        {mutation.error && <p className="text-red-600 text-sm">❌ Ошибка сохранения</p>}
+        {/* Кнопка сохранения */}
+        <div className="pt-4 border-t border-slate-100 flex items-center gap-4">
+          <button
+            onClick={handleSave}
+            disabled={mutation.isPending}
+            className="bg-blue-600 text-white font-medium px-5 py-2.5 rounded-lg hover:bg-blue-700 shadow-md shadow-blue-500/10 disabled:opacity-50"
+          >
+            {mutation.isPending ? 'Синхронизация...' : 'Сохранить конфигурацию'}
+          </button>
+          {saved && <span className="text-emerald-600 text-sm font-medium flex items-center gap-1">✅ Успешно применено в Go-оркестраторе</span>}
+        </div>
       </div>
     </div>
   );

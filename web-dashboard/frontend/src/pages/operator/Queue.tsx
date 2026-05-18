@@ -12,94 +12,117 @@ const STATUS_LABELS: Record<string, string> = {
   closed: 'Закрыт',
 };
 
+// используем аккуратные пиллы с границами:
 const STATUS_COLORS: Record<string, string> = {
-  new: 'bg-blue-100 text-blue-700',
-  in_progress: 'bg-purple-100 text-purple-700',
-  waiting: 'bg-yellow-100 text-yellow-700',
-  waiting_for_feedback: 'bg-green-100 text-green-700',
-  resolved: 'bg-gray-100 text-gray-700',
-  closed: 'bg-red-100 text-red-700',
+  new: 'bg-blue-50 text-blue-700 border border-blue-100',
+  in_progress: 'bg-amber-50 text-amber-700 border border-amber-100',
+  waiting: 'bg-rose-50 text-rose-700 border border-rose-100',
+  waiting_for_feedback: 'bg-emerald-50 text-emerald-700 border border-emerald-100',
+  resolved: 'bg-slate-100 text-slate-700 border border-slate-200',
+  closed: 'bg-slate-200 text-slate-800',
 };
 
 export default function Queue() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const statusFilter = searchParams.get('status') || 'new,waiting,in_progress,waiting_for_feedback';
   const queryClient = useQueryClient();
-    
+
+  // Текущий выбранный статус из URL. Если его нет, по умолчанию показываем активные тикеты
+  const currentStatus = searchParams.get('status') || 'active';
+
   useWebSocket((data) => {
       if (data.type === 'ticket_created' || data.type === 'ticket_updated' || data.type === 'new_escalated') {
           queryClient.invalidateQueries({ queryKey: ['tickets', 'active'] });
       }
   });
 
+  // Преобразуем фильтр для отправки на бэкенд
+  let apiStatusParam = currentStatus;
+  if (currentStatus === 'active') {
+    apiStatusParam = 'new,waiting,in_progress,waiting_for_feedback';
+  } else if (currentStatus === 'all') {
+    apiStatusParam = ''; // Пустой параметр вернет абсолютно все тикеты с бэкенда
+  }
+
   const { data, isLoading } = useQuery({
-    queryKey: ['tickets', 'active', statusFilter],
-    queryFn: () => api(`/tickets?status=${statusFilter}&limit=50`),
-    refetchInterval: 10000,
+    queryKey: ['tickets', 'queue', apiStatusParam],
+    queryFn: () => api(`/tickets?status=${apiStatusParam}&limit=100`),
   });
 
   if (isLoading) return <p className="p-6">Загрузка...</p>;
 
   const tickets = data?.tickets || [];
 
+  // Список табов для фильтрации
+  const tabs = [
+    { id: 'active', label: '⚡ Активные' },
+    { id: 'all', label: '📁 Все тикеты' },
+    { id: 'new', label: '📩 Новые' },
+    { id: 'in_progress', label: '⚙️ В работе' },
+    { id: 'resolved', label: '✅ Решенные' },
+    { id: 'closed', label: '🔒 Закрытые' },
+  ];
+
   return (
-    <div>
-      <h1 className="text-2xl font-bold mb-4">Очередь тикетов</h1>
-      
-      <div className="flex gap-2 mb-4">
-        {['new,waiting,in_progress,waiting_for_feedback', 'waiting', 'waiting_for_feedback', 'resolved'].map(filter => (
-          <Link
-            key={filter}
-            to={`/queue?status=${filter}`}
-            className={`px-3 py-1 rounded text-sm ${
-              statusFilter === filter ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-            }`}
-          >
-            {filter === 'new,waiting,in_progress,waiting_for_feedback' ? 'Все активные' :
-             filter === 'waiting' ? 'Ожидают' :
-             filter === 'waiting_for_feedback' ? 'Ждут ответа' : 'Решённые'}
-          </Link>
-        ))}
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <h1 className="text-2xl font-bold text-slate-900">Очередь обращений</h1>
+        
+        {/* Горизонтальная панель фильтров (Табы) */}
+        <div className="flex flex-wrap gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200/40">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setSearchParams({ status: tab.id })}
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-all duration-150 ${
+                currentStatus === tab.id
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {tickets.length === 0 ? (
-        <p className="text-gray-500 p-6 text-center bg-white rounded-lg shadow">Нет тикетов</p>
-      ) : (
-        <div className="bg-white rounded-lg shadow overflow-hidden">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">ID</th>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">Клиент</th>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">Текст</th>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">Категория</th>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">Статус</th>
-                <th className="p-3 text-left text-sm font-medium text-gray-500">Приоритет</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tickets.map((t: any) => (
-                <tr key={t.ID} className="border-t hover:bg-gray-50">
-                  <td className="p-3">
-                    <Link to={`/tickets/${t.ID}`} className="text-blue-600 hover:underline font-mono text-sm">
-                      {t.ID?.slice(0, 8)}
-                    </Link>
-                  </td>
-                  <td className="p-3 text-sm">{t.Client?.Name || '—'}</td>
-                  <td className="p-3 max-w-xs truncate text-sm">{t.OriginalText}</td>
-                  <td className="p-3 text-sm">{t.Category || '—'}</td>
-                  <td className="p-3">
-                    <span className={`px-2 py-1 rounded text-xs ${STATUS_COLORS[t.Status] || 'bg-gray-100'}`}>
-                      {STATUS_LABELS[t.Status] || t.Status}
-                    </span>
-                  </td>
-                  <td className="p-3 text-sm">{t.Priority}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+    {/* Таблица */}
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200/80 overflow-hidden">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-slate-50 border-b border-slate-200 text-slate-600">
+            <th className="p-4 text-left text-xs font-semibold uppercase tracking-wider">ID</th>
+            <th className="p-4 text-left text-xs font-semibold uppercase tracking-wider">Клиент</th>
+            <th className="p-4 text-left text-xs font-semibold uppercase tracking-wider">Текст обращения</th>
+            <th className="p-4 text-left text-xs font-semibold uppercase tracking-wider">AI Категория</th>
+            <th className="p-4 text-left text-xs font-semibold uppercase tracking-wider">Статус</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {tickets.map((t: any) => (
+            <tr key={t.ID} className="hover:bg-slate-50/80">
+              <td className="p-4">
+                <Link to={`/tickets/${t.ID}`} className="text-blue-600 hover:text-blue-700 font-mono text-sm font-medium">
+                  #{t.ID?.slice(0, 8)}
+                </Link>
+              </td>
+              <td className="p-4 text-sm font-medium text-slate-700">{t.Client?.Name || '—'}</td>
+              <td className="p-4 text-sm text-slate-600 max-w-xs truncate">{t.OriginalText}</td>
+              <td className="p-4 text-sm">
+                <span className="bg-violet-50 text-violet-700 text-xs px-2 py-1 rounded-md font-medium border border-violet-100/60">
+                  {t.Category || 'Определяется...'}
+                </span>
+              </td>
+              <td className="p-4">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[t.Status] || 'bg-slate-100'}`}>
+                  {STATUS_LABELS[t.Status] || t.Status}
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
-  );
+  </div>
+);
 }
