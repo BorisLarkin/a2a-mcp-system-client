@@ -83,6 +83,14 @@ func (tp *TicketProcessor) ProcessTicket(ticketID uuid.UUID) {
 	// Извлекаем финальный ответ и confidence
 	finalResponse := extractFinalResponse(resp.Classification)
 	confidence := extractConfidence(resp.Classification)
+
+	// Если классификатор не вызывался, но оркестратор принял решение — доверяем ему
+	if confidence == 0 && resp.Classification != nil {
+		if thresholdMet, ok := resp.Classification["threshold_met"].(bool); ok && thresholdMet {
+			confidence = 1.0
+		}
+	}
+
 	ticket.AIResponse = finalResponse
 	ticket.Category = extractCategory(resp.Classification)
 	tp.db.Save(&ticket)
@@ -218,8 +226,13 @@ func extractConfidence(classification map[string]interface{}) float64 {
 	if classification == nil {
 		return 0
 	}
+	// Прямое поле confidence
 	if conf, ok := classification["confidence"].(float64); ok {
 		return conf
+	}
+	// Если threshold_met = true, считаем confidence = 1.0
+	if thresholdMet, ok := classification["threshold_met"].(bool); ok && thresholdMet {
+		return 1.0
 	}
 	return 0
 }
